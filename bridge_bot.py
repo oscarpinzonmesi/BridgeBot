@@ -5,11 +5,10 @@ import requests
 app = Flask(__name__)
 
 # === CONFIG ===
-BRIDGE_TOKEN = os.getenv("BRIDGE_TOKEN")   # Token del nuevo bot puente (Telegram)
-ORBIS_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Token del bot Orbis (ya configurado)
+BRIDGE_TOKEN = os.getenv("TELEGRAM_TOKEN")   # Token del nuevo bot (BridgeBot)
+ORBIS_URL = os.getenv("ORBIS_URL")           # URL de tu servicio Orbis en Render
 
-BRIDGE_URL = f"https://api.telegram.org/bot{BRIDGE_TOKEN}/sendMessage"
-ORBIS_URL = f"https://api.telegram.org/bot{ORBIS_TOKEN}/sendMessage"
+BRIDGE_API = f"https://api.telegram.org/bot{BRIDGE_TOKEN}/sendMessage"
 
 
 # === RUTA WEBHOOK ===
@@ -21,7 +20,7 @@ def webhook():
         chat_id = data["message"]["chat"]["id"]
         text = data["message"].get("text", "")
 
-        # Si detecta palabras clave de agenda → mandar a Orbis
+        # Si detecta palabras clave de agenda → enviar a Orbis
         if "agenda" in text.lower() or "cita" in text.lower():
             requests.post(ORBIS_URL, json={
                 "chat_id": chat_id,
@@ -29,7 +28,7 @@ def webhook():
             })
         else:
             # Respuesta normal del bot puente
-            requests.post(BRIDGE_URL, json={
+            requests.post(BRIDGE_API, json={
                 "chat_id": chat_id,
                 "text": f"🤖 MesaGPT: te escuché → {text}"
             })
@@ -38,6 +37,6 @@ def webhook():
 
 
 # === RUTA HOME ===
-@app.route("/", methods=["GET"])
+@app.route("/ping", methods=["GET"])
 def home():
-    return "✅ Bridge Bot activo en Heroku"
+    return "✅ Bridge Bot activo en Render"
