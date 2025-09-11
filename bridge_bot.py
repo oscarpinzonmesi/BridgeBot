@@ -6,7 +6,7 @@ app = Flask(__name__)
 
 # === CONFIG ===
 BRIDGE_TOKEN = os.getenv("TELEGRAM_TOKEN")   # Token del nuevo bot (BridgeBot)
-ORBIS_URL = os.getenv("ORBIS_URL")           # URL de tu servicio Orbis en Render
+ORBIS_URL = os.getenv("ORBIS_URL")           # URL del servicio Orbis en Render
 
 BRIDGE_API = f"https://api.telegram.org/bot{BRIDGE_TOKEN}/sendMessage"
 
@@ -14,24 +14,28 @@ BRIDGE_API = f"https://api.telegram.org/bot{BRIDGE_TOKEN}/sendMessage"
 # === RUTA WEBHOOK ===
 @app.route("/", methods=["POST"])
 def webhook():
-    data = request.get_json()
+    data = request.get_json(force=True)
+    print("📩 Llego update:", data, flush=True)   # DEBUG
 
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
         text = data["message"].get("text", "")
+        print(f"➡️ Mensaje recibido: {text}", flush=True)
 
-        # Si detecta palabras clave de agenda → enviar a Orbis
-        if "agenda" in text.lower() or "cita" in text.lower():
-            requests.post(ORBIS_URL, json={
-                "chat_id": chat_id,
-                "text": f"📌 Orden enviada a Orbis: {text}"
-            })
-        else:
-            # Respuesta normal del bot puente
-            requests.post(BRIDGE_API, json={
-                "chat_id": chat_id,
-                "text": f"🤖 MesaGPT: te escuché → {text}"
-            })
+        try:
+            if "agenda" in text.lower() or "cita" in text.lower():
+                print("🔗 Reenviando update completo a Orbis...", flush=True)
+                r = requests.post(ORBIS_URL, json=data)   # Enviar update completo
+                print("Respuesta Orbis:", r.text, flush=True)
+            else:
+                print("🤖 Respondiendo desde BridgeBot", flush=True)
+                r = requests.post(BRIDGE_API, json={
+                    "chat_id": chat_id,
+                    "text": f"🤖 MesaGPT: te escuché → {text}"
+                })
+                print("Respuesta BridgeBot:", r.text, flush=True)
+        except Exception as e:
+            print("❌ Error procesando mensaje:", str(e), flush=True)
 
     return {"ok": True}
 
