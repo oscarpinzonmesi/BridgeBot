@@ -1,1 +1,1 @@
-web: python bridge_bot.py
+web: gunicorn bridge_bot:app
