@@ -23,7 +23,17 @@ def consultar_mesa_gpt(texto: str) -> str:
         respuesta = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Eres MesaGPT, un asistente legal y de agenda. Si es tema de agenda, responde con un comando que Orbis entienda (/agenda, /registrar HH:MM tarea, /borrar HH:MM). Si no es agenda, responde con texto normal."},
+                {"role": "system", "content": (
+                    "Eres MesaGPT, un asistente legal y de agenda. "
+                    "⚠️ IMPORTANTE: Cuando el usuario pida registrar una cita o tarea, "
+                    "debes responder SIEMPRE con el formato exacto: "
+                    "/registrar HH:MM descripción. "
+                    "Ejemplo: 'mañana a las 8 con Pedro' → '/registrar 08:00 reunión con Pedro'. "
+                    "Usa '/agenda' solo si el usuario pide explícitamente ver la agenda. "
+                    "Usa '/borrar HH:MM' solo si pide eliminar algo. "
+                    "Si no es tema de agenda, responde con texto normal."
+                )},
+
                 {"role": "user", "content": texto}
             ]
         )
