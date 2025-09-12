@@ -101,6 +101,9 @@ def mesa():
 def webhook():
     data = request.get_json(force=True)
 
+    # 👀 Debug: imprimir todo lo que manda Telegram
+    print("📦 Data cruda de Telegram:", data, flush=True)
+
     if "message" not in data:
         return {"ok": True}
 
@@ -115,11 +118,23 @@ def webhook():
     # Caso 2: mensaje de voz
     elif "voice" in data["message"]:
         file_id = data["message"]["voice"]["file_id"]
-        print(f"🎤 Telegram → BridgeBot (voz): {file_id}", flush=True)
+        print(f"🎤 Telegram → BridgeBot (voice): {file_id}", flush=True)
         ogg_file = descargar_voz(file_id)
         if ogg_file:
             transcripcion = transcribir_voz(ogg_file)
             print(f"📝 Transcripción: {transcripcion}", flush=True)
+            mesa_data = {"chat_id": chat_id, "orden": transcripcion}
+        else:
+            return jsonify({"error": "No se pudo descargar el audio"}), 500
+
+    # Caso 3: mensaje de audio (archivo adjunto)
+    elif "audio" in data["message"]:
+        file_id = data["message"]["audio"]["file_id"]
+        print(f"🎶 Telegram → BridgeBot (audio): {file_id}", flush=True)
+        ogg_file = descargar_voz(file_id)
+        if ogg_file:
+            transcripcion = transcribir_voz(ogg_file)
+            print(f"📝 Transcripción (audio): {transcripcion}", flush=True)
             mesa_data = {"chat_id": chat_id, "orden": transcripcion}
         else:
             return jsonify({"error": "No se pudo descargar el audio"}), 500
@@ -130,6 +145,7 @@ def webhook():
     # Redirigir a /mesa internamente
     with app.test_request_context("/mesa", method="POST", json=mesa_data):
         return mesa()
+
 
 
 # === RUTA HOME ===
