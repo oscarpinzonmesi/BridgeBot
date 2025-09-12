@@ -1,126 +1,69 @@
 import os
-from flask import Flask, request, jsonify
 import requests
+from flask import Flask, request, jsonify
 from openai import OpenAI
 
 app = Flask(__name__)
 
 # === CONFIG ===
-BRIDGE_TOKEN = os.getenv("TELEGRAM_TOKEN")     # Token de tu bot en Telegram (BridgeBot)
-ORBIS_API = os.getenv("ORBIS_API")             # URL de Orbis como API: https://orbis-xxx.onrender.com/procesar
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")   # Tu API key de OpenAI
+BRIDGE_TOKEN = os.getenv("TELEGRAM_TOKEN")
+ORBIS_API = os.getenv("ORBIS_API")             # Ej: https://orbis-xxx.onrender.com/procesar
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 BRIDGE_API = f"https://api.telegram.org/bot{BRIDGE_TOKEN}/sendMessage"
-TELEGRAM_API = f"https://api.telegram.org/bot{BRIDGE_TOKEN}"  # 👈 nuevo
+TELEGRAM_API = f"https://api.telegram.org/bot{BRIDGE_TOKEN}"
 
-# Inicializar cliente de OpenAI
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 
-# === Función: consultar a MesaGPT ===
-def consultar_mesa_gpt(texto: str) -> str:
+# === Función: MesaGPT actúa como secretario ===
+def mesa_secretario(chat_id: str, texto: str):
+    """
+    MesaGPT interpreta el texto, decide si hablar directo
+    o consultar a Orbis, y devuelve una respuesta natural.
+    """
     try:
+        # 1. Interpretar intención del usuario
         respuesta = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Eres MesaGPT, el cerebro de Doctor Mesa. "
-                        "Tu tarea es interpretar instrucciones en lenguaje natural y devolver SIEMPRE "
-                        "un comando válido para Orbis cuando la instrucción sea sobre la agenda. "
-                        "Comandos disponibles:\n\n"
-                        "👉 /agenda → mostrar toda la agenda\n"
-                        "👉 /registrar HH:MM tarea → registrar cita/tarea\n"
-                        "👉 /borrar HH:MM → borrar cita en hora exacta\n"
-                        "👉 /borrar_todo → borrar toda la agenda\n"
-                        "👉 /reprogramar HH:MM → mover todas las citas a una nueva hora\n"
-                        "👉 /buscar Nombre → mostrar citas con esa persona\n"
-                        "👉 /buscar_fecha YYYY-MM-DD → mostrar citas de un día\n"
-                        "👉 /cuando Nombre → decir a qué hora tiene citas con esa persona\n\n"
-                        "Reglas:\n"
-                        "- Si el usuario dice algo de agenda, traduce a un comando exacto de arriba.\n"
-                        "- Si la orden no tiene hora o fecha, infórmalo en texto claro.\n"
-                        "- Si no es tema de agenda, responde como asistente normal (legal o conversación).\n"
-                    )
-                },
+                {"role": "system", "content": """Eres MesaGPT, secretario legal y de agenda.
+- El usuario siempre te habla en lenguaje natural.
+- Si la consulta es de agenda, tradúcela a un comando (/agenda, /registrar HH:MM tarea, /borrar HH:MM, /buscar NOMBRE) SOLO INTERNAMENTE.
+- Envía ese comando a Orbis.
+- Luego transforma la respuesta de Orbis en un mensaje natural para el usuario.
+- Nunca muestres comandos al usuario.
+- Siempre responde con frases claras como si fueras su asistente humano."""},
                 {"role": "user", "content": texto}
             ]
         )
+        interpretacion = respuesta.choices[0].message.content.strip()
 
-        return respuesta.choices[0].message.content.strip()
-    except Exception as e:
-        print("❌ Error consultando a MesaGPT:", str(e), flush=True)
-        return "⚠️ No pude comunicarme con MesaGPT."
-
-
-# === Funciones nuevas para VOZ ===
-def descargar_voz(file_id: str) -> str:
-    """Descarga el archivo de voz de Telegram y lo guarda como voice.ogg"""
-    try:
-        r = requests.get(f"{TELEGRAM_API}/getFile?file_id={file_id}").json()
-        file_path = r["result"]["file_path"]
-        file_url = f"https://api.telegram.org/file/bot{BRIDGE_TOKEN}/{file_path}"
-        voice_file = requests.get(file_url)
-        with open("voice.ogg", "wb") as f:
-            f.write(voice_file.content)
-        return "voice.ogg"
-    except Exception as e:
-        print("❌ Error descargando voz:", str(e), flush=True)
-        return None
-
-
-def transcribir_voz(file_path: str) -> str:
-    """Envía el audio a Whisper y devuelve el texto transcrito"""
-    try:
-        with open(file_path, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(  # 👈 usa Whisper
-                model="whisper-1",
-                file=audio_file
-            )
-        return transcript.text
-    except Exception as e:
-        print("❌ Error transcribiendo voz:", str(e), flush=True)
-        return ""
-
-
-# === ENDPOINT DE MESA (para usarlo interno) ===
-@app.route("/mesa", methods=["POST"])
-def mesa():
-    data = request.get_json(force=True)
-    chat_id = data.get("chat_id")
-    orden = data.get("orden", "")
-
-    if not chat_id or not orden:
-        return jsonify({"error": "Falta chat_id u orden"}), 400
-
-    try:
-        # Paso 1: consultar a MesaGPT
-        respuesta_mesa = consultar_mesa_gpt(orden)
-        print(f"🤖 MesaGPT interpretó: {orden}  →  {respuesta_mesa}", flush=True)
-
-        # 🧹 Normalizar respuesta (quitar comillas, espacios extra, etc.)
-        respuesta_mesa = respuesta_mesa.strip().strip("'").strip('"')
-
-        # Paso 2: si es un comando de agenda (/...), lo pasamos a Orbis
-        if respuesta_mesa.startswith("/"):
+        # 2. Si MesaGPT dice que hay que ir a Orbis
+        if interpretacion.startswith("/"):
+            r = requests.post(ORBIS_API, json={"texto": interpretacion})
             try:
-                r = requests.post(ORBIS_API, json={"texto": respuesta_mesa})
-                respuesta_orbis = r.json().get("respuesta", "❌ Orbis no devolvió respuesta")
-            except Exception as e:
-                print("❌ Error consultando Orbis:", str(e), flush=True)
-                respuesta_orbis = "⚠️ Error: Orbis devolvió algo inesperado"
+                respuesta_orbis = r.json().get("respuesta", "")
+            except Exception:
+                respuesta_orbis = "⚠️ Orbis no devolvió datos válidos"
 
-            # Mandar la respuesta de Orbis al chat de Telegram
-            requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": respuesta_orbis})
+            # 3. Reformular en lenguaje humano
+            final = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Eres un secretario que transforma datos crudos en una respuesta natural y clara para el Doctor."},
+                    {"role": "user", "content": f"Datos de Orbis: {respuesta_orbis}"}
+                ]
+            )
+            texto_final = final.choices[0].message.content.strip()
+            requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
         else:
-            # Si no es comando, es respuesta normal de MesaGPT
-            requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": f"🤖 MesaGPT: {respuesta_mesa}"})
-    except Exception as e:
-        print("❌ Error en /mesa:", str(e), flush=True)
-        return jsonify({"error": str(e)}), 500
+            # 4. Si no es agenda, responder directo
+            requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": interpretacion})
 
-    return jsonify({"ok": True})
+    except Exception as e:
+        print("❌ Error en mesa_secretario:", str(e), flush=True)
+        requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": "⚠️ Hubo un error procesando tu mensaje."})
 
 
 # === TELEGRAM WEBHOOK ===
@@ -128,67 +71,66 @@ def mesa():
 def webhook():
     data = request.get_json(force=True)
 
-    # 👀 Debug: imprimir todo lo que manda Telegram
-    print("📦 Datos crudos de Telegram:", data, flush=True)
-
     if "message" not in data:
         return {"ok": True}
 
     chat_id = data["message"]["chat"]["id"]
 
-    # Caso 1: mensaje de texto
     if "text" in data["message"]:
-        text = data["message"]["text"]
-        print(f"📩 Telegram → BridgeBot (texto): {text}", flush=True)
-        mesa_data = {"chat_id": chat_id, "orden": text}
+        texto = data["message"]["text"]
+        print(f"📩 Telegram → Doctor: {texto}", flush=True)
+        mesa_secretario(chat_id, texto)
 
-    # Caso 2: mensaje de voz (nota de voz en formato ogg)
     elif "voice" in data["message"]:
         file_id = data["message"]["voice"]["file_id"]
-        print(f"🎤 Telegram → BridgeBot (voice): {file_id}", flush=True)
-        ogg_file = descargar_voz(file_id)
-        if ogg_file:
-            transcripcion = transcribir_voz(ogg_file)
-            print(f"📝 Transcripción (voice): {transcripcion}", flush=True)
-            mesa_data = {"chat_id": chat_id, "orden": transcripcion}
-        else:
-            return jsonify({"error": "No se pudo descargar el audio (voice)"}), 500
+        print(f"🎤 Telegram → Doctor (voz): {file_id}", flush=True)
 
-    # Caso 3: mensaje de audio (archivo de música / mp3 / ogg)
-    elif "audio" in data["message"]:
-        file_id = data["message"]["audio"]["file_id"]
-        print(f"🎶 Telegram → BridgeBot (audio): {file_id}", flush=True)
-        ogg_file = descargar_voz(file_id)
-        if ogg_file:
-            transcripcion = transcribir_voz(ogg_file)
-            print(f"📝 Transcripción (audio): {transcripcion}", flush=True)
-            mesa_data = {"chat_id": chat_id, "orden": transcripcion}
-        else:
-            return jsonify({"error": "No se pudo descargar el audio (audio)"}), 500
+        # Descargar y transcribir voz con Whisper
+        r = requests.get(f"{TELEGRAM_API}/getFile?file_id={file_id}").json()
+        file_path = r["result"]["file_path"]
+        file_url = f"https://api.telegram.org/file/bot{BRIDGE_TOKEN}/{file_path}"
+        voice_file = requests.get(file_url)
+        with open("voice.ogg", "wb") as f:
+            f.write(voice_file.content)
 
-    # Caso 4: mensaje de video_note (nota de voz redonda en Telegram)
-    elif "video_note" in data["message"]:
-        file_id = data["message"]["video_note"]["file_id"]
-        print(f"🎥 Telegram → BridgeBot (video_note): {file_id}", flush=True)
-        ogg_file = descargar_voz(file_id)
-        if ogg_file:
-            transcripcion = transcribir_voz(ogg_file)
-            print(f"📝 Transcripción (video_note): {transcripcion}", flush=True)
-            mesa_data = {"chat_id": chat_id, "orden": transcripcion}
-        else:
-            return jsonify({"error": "No se pudo descargar el video_note"}), 500
+        with open("voice.ogg", "rb") as audio:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio
+            )
+        texto = transcript.text
+        print(f"📝 Transcripción: {texto}", flush=True)
+        mesa_secretario(chat_id, texto)
 
-    else:
-        return {"ok": True}
+    return {"ok": True}
 
-    # Redirigir a /mesa internamente
-    with app.test_request_context("/mesa", method="POST", json=mesa_data):
-        return mesa()
+# === Función: responder con audio (TTS) ===
+def responder_con_audio(chat_id: str, texto: str):
+    try:
+        # 1. Generar audio con OpenAI
+        respuesta_audio = client.audio.speech.create(
+            model="gpt-4o-mini-tts",
+            voice="alloy",   # puedes cambiar la voz (ej: "verse", "sage")
+            input=texto
+        )
 
+        # 2. Guardar en archivo .ogg
+        with open("respuesta.ogg", "wb") as f:
+            f.write(respuesta_audio.content)
 
+        # 3. Enviar a Telegram como nota de voz
+        with open("respuesta.ogg", "rb") as f:
+            r = requests.post(
+                f"https://api.telegram.org/bot{BRIDGE_TOKEN}/sendVoice",
+                data={"chat_id": chat_id},
+                files={"voice": f}
+            )
+        print("📢 Audio enviado a Telegram", flush=True)
+    except Exception as e:
+        print("❌ Error generando/enviando audio:", str(e), flush=True)
+        # fallback: enviar texto si falla
+        requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto})
 
-
-# === RUTA HOME ===
 @app.route("/ping", methods=["GET"])
 def home():
-    return "✅ Bridge Bot activo en Render"
+    return "✅ BridgeBot activo como secretario"
