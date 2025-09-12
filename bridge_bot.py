@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 from gtts import gTTS
 from datetime import datetime, timezone, timedelta
-
+import re
 app = Flask(__name__)
 
 # =========================
@@ -105,19 +105,59 @@ def transcribir_audio(file_path: str) -> str:
 # =========================
 # TTS (texto → voz) con gTTS (MP3) y envío
 # =========================
+# =========================
+# Limpieza de texto para TTS
+# =========================
+
+
+def preparar_texto_para_audio(texto: str) -> str:
+    # 1. Eliminar símbolos molestos
+    limpio = re.sub(r"[*#\-]+", " ", texto)
+
+    # 2. Reemplazar horas tipo HH:MM
+    limpio = re.sub(
+        r"\b(\d{1,2}):(\d{2})\b",
+        lambda m: f"{int(m.group(1))} horas con {m.group(2)} minutos"
+        if m.group(2) != "00"
+        else f"{int(m.group(1))} en punto",
+        limpio,
+    )
+
+    # 3. Reemplazar fechas tipo DD/MM/YYYY
+    def convertir_fecha(m):
+        dia = int(m.group(1))
+        mes = int(m.group(2))
+        anio = int(m.group(3))
+        meses = [
+            "enero","febrero","marzo","abril","mayo","junio",
+            "julio","agosto","septiembre","octubre","noviembre","diciembre"
+        ]
+        return f"{dia} de {meses[mes-1]} de {anio}"
+
+    limpio = re.sub(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", convertir_fecha, limpio)
+
+    # 4. Eliminar comas y puntos
+    limpio = limpio.replace(",", " ").replace(".", " ")
+
+    return limpio.strip()
+
+
+# =========================
+# TTS (texto → voz) con gTTS (MP3) y envío
+# =========================
 def enviar_audio(chat_id: int | str, texto: str):
     """
     Genera MP3 con gTTS y lo envía como audio (sendAudio).
     Si algo falla, hace fallback a texto.
     """
     try:
-        # Generar mp3 temporal
+        texto_para_leer = preparar_texto_para_audio(texto)
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
             mp3_path = Path(tmp.name)
-        tts = gTTS(text=texto, lang="es")
+        tts = gTTS(text=texto_para_leer, lang="es")
         tts.save(str(mp3_path))
 
-        # Enviar como audio
         with open(mp3_path, "rb") as f:
             requests.post(
                 f"{TELEGRAM_API}/sendAudio",
@@ -127,8 +167,8 @@ def enviar_audio(chat_id: int | str, texto: str):
         print(f"🎧 Audio MP3 enviado a chat {chat_id}", flush=True)
     except Exception as e:
         print("❌ Error enviando audio:", str(e), flush=True)
-        # Fallback a texto
         requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto})
+
 
 
 # =========================
