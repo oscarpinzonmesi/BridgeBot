@@ -10,9 +10,9 @@ app = Flask(__name__)
 # =========================
 # CONFIG
 # =========================
-BRIDGE_TOKEN = os.getenv("TELEGRAM_TOKEN")            # Token del bot de Telegram
-ORBIS_API    = os.getenv("ORBIS_API")                 # URL de Orbis: https://.../procesar
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")          # API Key de OpenAI
+BRIDGE_TOKEN    = os.getenv("TELEGRAM_TOKEN")      # Token del bot de Telegram
+ORBIS_API       = os.getenv("ORBIS_API")           # URL de Orbis: https://.../procesar
+OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY")      # API Key de OpenAI
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BRIDGE_TOKEN}"
 BRIDGE_API   = f"{TELEGRAM_API}/sendMessage"
@@ -27,7 +27,8 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 def consultar_mesa_gpt(texto: str) -> str:
     """
     Interpreta el mensaje del usuario. Si es agenda, sugiere comandos para Orbis.
-    Nota: Si el usuario pide audio, NUNCA digas que no puedes; el sistema enviará voz.
+    OJO: si el usuario pide respuesta por audio/voz, NO digas que no puedes;
+    el sistema generará y enviará la voz con tu texto.
     """
     try:
         respuesta = client.chat.completions.create(
@@ -45,7 +46,7 @@ Tu rol:
   • /buscar Nombre
   • /borrar_todo
   • /reprogramar YYYY-MM-DD HH:MM NUEVA_FECHA NUEVA_HORA
-- Tú eres el cerebro: Orbis solo ejecuta, nunca responde directo al usuario.
+- Eres el cerebro: Orbis solo ejecuta, nunca responde directo al usuario.
 - Responde siempre en tono claro y natural como un secretario humano.
 - Si el usuario pide respuesta por audio/voz/nota de voz, NO digas que no puedes:
   el sistema generará y enviará el audio con tu texto.
@@ -68,7 +69,7 @@ Tú: "Mañana tienes: 10:00 reunión con Joaquín, 13:00 almuerzo con Ana."
 
 
 # =========================
-# Voz (descargar y transcribir)
+# Descarga & Transcripción de voz
 # =========================
 def descargar_archivo(file_id: str, nombre: str) -> str | None:
     try:
@@ -98,55 +99,73 @@ def transcribir_audio(file_path: str) -> str:
 
 
 # =========================
-# TTS (texto → voz) y envío
+# TTS (texto → voz) y envío — robusto a versiones
 # =========================
-def generar_audio_ogg(texto: str, destino: Path) -> bool:
+def _sintetizar_audio(texto: str) -> tuple[Path, bool]:
     """
-    Genera un .ogg (Opus) apto para Telegram sendVoice usando OpenAI TTS.
+    Devuelve (ruta, es_nota_de_voz).
+    - True  -> .ogg (opus) apto para sendVoice.
+    - False -> .mp3 apto para sendAudio (fallback).
     """
+    # 1) Intentar OGG/Opus (nota de voz) con response_format
     try:
-        # Streaming directo a archivo .ogg (opus)
+        ogg_path = Path("respuesta.ogg")
         with client.audio.speech.with_streaming_response.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
             input=texto,
-            format="opus"  # Produce audio/ogg; ideal para sendVoice
+            response_format="opus"  # en algunos SDK es "response_format", no "format"
         ) as resp:
-            resp.stream_to_file(destino)
-        return True
+            resp.stream_to_file(ogg_path)
+        return ogg_path, True
+    except TypeError:
+        # Firma distinta → probamos sin response_format (paso a MP3)
+        pass
     except Exception as e:
-        print("❌ Error generando audio:", str(e), flush=True)
-        return False
+        print("⚠️ TTS opus falló, pruebo MP3. Detalle:", str(e), flush=True)
+
+    # 2) Plan B: MP3 (sendAudio)
+    mp3_path = Path("respuesta.mp3")
+    with client.audio.speech.with_streaming_response.create(
+        model="gpt-4o-mini-tts",
+        voice="alloy",
+        input=texto
+    ) as resp:
+        resp.stream_to_file(mp3_path)
+    return mp3_path, False
 
 
 def enviar_audio(chat_id: int | str, texto: str):
     """
-    Convierte 'texto' a .ogg (opus) y lo envía como nota de voz (sendVoice).
-    Si falla, hace fallback a texto.
+    Convierte 'texto' a audio y lo envía:
+    - OGG/Opus → sendVoice (nota de voz)
+    - MP3      → sendAudio (archivo de audio)
+    Si todo falla, responde en texto.
     """
     try:
-        path = Path("respuesta.ogg")
-        ok = generar_audio_ogg(texto, path)
-        if not ok:
-            # Fallback a texto
-            requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto})
-            return
-
-        with open(path, "rb") as f:
-            requests.post(
-                f"{TELEGRAM_API}/sendVoice",
-                data={"chat_id": chat_id},
-                files={"voice": f}
-            )
-        print(f"🎧 Audio enviado a chat {chat_id}", flush=True)
+        path, es_voz = _sintetizar_audio(texto)
+        if es_voz:
+            with open(path, "rb") as f:
+                requests.post(
+                    f"{TELEGRAM_API}/sendVoice",
+                    data={"chat_id": chat_id},
+                    files={"voice": f}
+                )
+        else:
+            with open(path, "rb") as f:
+                requests.post(
+                    f"{TELEGRAM_API}/sendAudio",
+                    data={"chat_id": chat_id, "title": "Respuesta"},
+                    files={"audio": f}
+                )
+        print(f"🎧 Audio enviado ({'voz' if es_voz else 'audio'}) a chat {chat_id}", flush=True)
     except Exception as e:
         print("❌ Error enviando audio:", str(e), flush=True)
-        # Fallback a texto para no dejar al usuario sin respuesta
-        requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto})
+        requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto})  # fallback
 
 
 # =========================
-# Core: /mesa
+# Núcleo: /mesa
 # =========================
 @app.route("/mesa", methods=["POST"])
 def mesa():
@@ -166,14 +185,14 @@ def mesa():
 
         # Caso: comando para Orbis
         if respuesta_mesa.startswith("/"):
-            # Pasar también chat_id por si Orbis programa recordatorios
+            # Pasar también chat_id por si Orbis agenda recordatorios
             r = requests.post(ORBIS_API, json={"texto": respuesta_mesa, "chat_id": chat_id})
             try:
                 respuesta_orbis = r.json().get("respuesta", "❌ No obtuve respuesta de la agenda.")
             except Exception:
                 respuesta_orbis = "⚠️ Error: la agenda devolvió un formato inesperado."
 
-            # Responder natural (yo, no Orbis)
+            # Yo respondo (no Orbis)
             texto_final = f"{respuesta_orbis}"
 
             if want_audio:
@@ -213,7 +232,7 @@ def webhook():
         print(f"📩 Telegram → Doctor (texto): {text}", flush=True)
         payload = {"chat_id": chat_id, "orden": text}
 
-    # Voz
+    # Voz (mensaje de voz)
     elif "voice" in msg:
         file_id = msg["voice"]["file_id"]
         print(f"🎤 Telegram → Doctor (voz): {file_id}", flush=True)
@@ -222,8 +241,16 @@ def webhook():
         print(f"📝 Transcripción: {transcripcion}", flush=True)
         payload = {"chat_id": chat_id, "orden": transcripcion or "(audio vacío)"}
 
+    # Video note (por si lo usas)
+    elif "video_note" in msg:
+        file_id = msg["video_note"]["file_id"]
+        print(f"🎥 Telegram → Doctor (video_note): {file_id}", flush=True)
+        mp4_path = descargar_archivo(file_id, "nota_video.mp4")
+        transcripcion = transcribir_audio(mp4_path) if mp4_path else ""
+        print(f"📝 Transcripción (video_note): {transcripcion}", flush=True)
+        payload = {"chat_id": chat_id, "orden": transcripcion or "(audio vacío)"}
+
     else:
-        # Ignorar otros tipos por ahora
         return {"ok": True}
 
     # Redirigir internamente a /mesa
