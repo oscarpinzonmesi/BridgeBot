@@ -16,13 +16,23 @@ def interpretar_orden(texto: str) -> str:
     """Convierte frases en lenguaje natural a comandos que entiende Orbis"""
     t = texto.lower()
 
-    # Ejemplo: detectar "mañana a las 3 pm"
-    if "carlos" in t and ("3 pm" in t or "tres" in t):
+    # === Detectar horas comunes ===
+    if "8 de la noche" in t or "8 pm" in t:
+        return "/registrar 20:00 Cita médica"
+
+    if "3 pm" in t or "tres de la tarde" in t:
         return "/registrar 15:00 Cita con Carlos en el parque"
 
-    # Podrías añadir más reglas aquí para otros casos
-    # Por defecto devuelve el mismo texto
+    if "9 am" in t or "9 de la mañana" in t:
+        return "/registrar 09:00 Reunión"
+
+    # === Si el texto ya es un comando (/agenda, /registrar, /borrar) ===
+    if t.startswith("/"):
+        return texto
+
+    # Por defecto, devolver igual
     return texto
+
 
 
 # === ENDPOINT DE MESA ===
