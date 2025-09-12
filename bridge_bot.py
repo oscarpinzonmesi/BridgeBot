@@ -11,6 +11,20 @@ ORBIS_API = os.getenv("ORBIS_API")           # URL de Orbis: https://orbis-xxx.o
 BRIDGE_API = f"https://api.telegram.org/bot{BRIDGE_TOKEN}/sendMessage"
 
 
+# === INTERPRETADOR DE ÓRDENES ===
+def interpretar_orden(texto: str) -> str:
+    """Convierte frases en lenguaje natural a comandos que entiende Orbis"""
+    t = texto.lower()
+
+    # Ejemplo: detectar "mañana a las 3 pm"
+    if "carlos" in t and ("3 pm" in t or "tres" in t):
+        return "/registrar 15:00 Cita con Carlos en el parque"
+
+    # Podrías añadir más reglas aquí para otros casos
+    # Por defecto devuelve el mismo texto
+    return texto
+
+
 # === ENDPOINT DE MESA ===
 @app.route("/mesa", methods=["POST"])
 def mesa():
@@ -23,14 +37,21 @@ def mesa():
         return jsonify({"error": "Falta chat_id u orden"}), 400
 
     try:
-        if orden.startswith("/") or "agenda" in orden.lower() or "cita" in orden.lower():
-            print("🔗 MesaGPT dio orden para Orbis:", orden, flush=True)
-            r = requests.post(ORBIS_API, json={"texto": orden})
-            respuesta_orbis = r.json().get("respuesta", "❌ Error en Orbis")
+        # Interpretamos primero
+        orden_traducida = interpretar_orden(orden)
+        print(f"🔎 Interpretado: {orden}  →  {orden_traducida}", flush=True)
+
+        if orden_traducida.startswith("/") or "agenda" in orden_traducida.lower() or "cita" in orden_traducida.lower():
+            print("🔗 MesaGPT dio orden para Orbis:", orden_traducida, flush=True)
+            r = requests.post(ORBIS_API, json={"texto": orden_traducida})
+            try:
+                respuesta_orbis = r.json().get("respuesta", "❌ Orbis no devolvió respuesta")
+            except Exception:
+                respuesta_orbis = "⚠️ Error: Orbis devolvió algo inesperado"
             requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": respuesta_orbis})
         else:
-            print("🤖 MesaGPT respondió directo:", orden, flush=True)
-            requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": f"🤖 MesaGPT: {orden}"})
+            print("🤖 MesaGPT respondió directo:", orden_traducida, flush=True)
+            requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": f"🤖 MesaGPT: {orden_traducida}"})
     except Exception as e:
         print("❌ Error en /mesa:", str(e), flush=True)
         return jsonify({"error": str(e)}), 500
@@ -52,7 +73,7 @@ def webhook():
 
     print(f"📩 Telegram → BridgeBot: {text}", flush=True)
 
-    # 🔗 En vez de hacer requests a sí mismo, llamamos directamente a la lógica de /mesa
+    # Simulamos el paso por MesaGPT
     mesa_data = {"chat_id": chat_id, "orden": text}
     with app.test_request_context("/mesa", method="POST", json=mesa_data):
         return mesa()
