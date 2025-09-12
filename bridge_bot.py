@@ -23,20 +23,31 @@ def consultar_mesa_gpt(texto: str) -> str:
         respuesta = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": (
-                    "Eres MesaGPT, un asistente legal y de agenda. "
-                    "⚠️ IMPORTANTE: Cuando el usuario pida registrar una cita o tarea, "
-                    "debes responder SIEMPRE con el formato exacto: "
-                    "/registrar HH:MM descripción. "
-                    "Ejemplo: 'mañana a las 8 con Pedro' → '/registrar 08:00 reunión con Pedro'. "
-                    "Usa '/agenda' solo si el usuario pide explícitamente ver la agenda. "
-                    "Usa '/borrar HH:MM' solo si pide eliminar algo. "
-                    "Si no es tema de agenda, responde con texto normal."
-                )},
-
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres MesaGPT, el cerebro de Doctor Mesa. "
+                        "Tu tarea es interpretar instrucciones en lenguaje natural y devolver SIEMPRE "
+                        "un comando válido para Orbis cuando la instrucción sea sobre la agenda. "
+                        "Comandos disponibles:\n\n"
+                        "👉 /agenda → mostrar toda la agenda\n"
+                        "👉 /registrar HH:MM tarea → registrar cita/tarea\n"
+                        "👉 /borrar HH:MM → borrar cita en hora exacta\n"
+                        "👉 /borrar_todo → borrar toda la agenda\n"
+                        "👉 /reprogramar HH:MM → mover todas las citas a una nueva hora\n"
+                        "👉 /buscar Nombre → mostrar citas con esa persona\n"
+                        "👉 /buscar_fecha YYYY-MM-DD → mostrar citas de un día\n"
+                        "👉 /cuando Nombre → decir a qué hora tiene citas con esa persona\n\n"
+                        "Reglas:\n"
+                        "- Si el usuario dice algo de agenda, traduce a un comando exacto de arriba.\n"
+                        "- Si la orden no tiene hora o fecha, infórmalo en texto claro.\n"
+                        "- Si no es tema de agenda, responde como asistente normal (legal o conversación).\n"
+                    )
+                },
                 {"role": "user", "content": texto}
             ]
         )
+
         return respuesta.choices[0].message.content.strip()
     except Exception as e:
         print("❌ Error consultando a MesaGPT:", str(e), flush=True)
