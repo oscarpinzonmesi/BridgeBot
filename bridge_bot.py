@@ -23,10 +23,9 @@ def webhook():
         print(f"➡️ Mensaje recibido: {text}", flush=True)
 
         try:
-            # Si el texto empieza con "/" (es un comando) o contiene palabras clave → se manda a Orbis
             if text.startswith("/") or "agenda" in text.lower() or "cita" in text.lower():
                 print("🔗 Reenviando update completo a Orbis...", flush=True)
-                r = requests.post(ORBIS_URL, json=data)   # reenvía el update completo
+                r = requests.post(ORBIS_URL, json=data)
                 print("Respuesta Orbis:", r.text, flush=True)
             else:
                 print("🤖 Respondiendo desde BridgeBot", flush=True)
@@ -35,9 +34,10 @@ def webhook():
                     "text": f"🤖 MesaGPT: te escuché → {text}"
                 })
                 print("Respuesta BridgeBot:", r.text, flush=True)
+        except Exception as e:
+            print("❌ Error procesando mensaje:", str(e), flush=True)
 
-
-            return {"ok": True}
+    return {"ok": True}
 
 
 # === RUTA HOME ===
