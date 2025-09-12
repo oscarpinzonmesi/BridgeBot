@@ -31,9 +31,6 @@ def ahora_bogota():
     return datetime.now(timezone.utc) - timedelta(hours=5)
 
 
-# =========================
-# MesaGPT (interpretación)
-# =========================
 def consultar_mesa_gpt(texto: str) -> str:
     """
     Interpreta el mensaje del usuario. Si es agenda, sugiere comandos para Orbis.
@@ -56,15 +53,20 @@ def consultar_mesa_gpt(texto: str) -> str:
                         "  • /borrar YYYY-MM-DD HH:MM\n"
                         "  • /buscar Nombre\n"
                         "  • /borrar_todo\n"
+                        "  • /borrar_fecha YYYY-MM-DD   ← (nuevo, para borrar todas las citas de un día específico)\n"
                         "  • /reprogramar YYYY-MM-DD HH:MM NUEVA_FECHA NUEVA_HORA\n"
+                        "- Si el usuario dice: 'borra lo de mañana', 'elimínalo todo para el 15 de septiembre', etc., "
+                        "usa /borrar_fecha con la fecha correspondiente en formato YYYY-MM-DD.\n"
                         "- Tú eres el cerebro: Orbis solo ejecuta, nunca responde directo al usuario.\n"
                         "- Responde claro y natural como un secretario humano.\n"
                         "- No prometas nada sobre audio: este sistema decidirá el canal de salida.\n\n"
                         "Ejemplos:\n"
                         "Usuario: \"¿Tengo cita con Juan?\"\n"
-                        "Tú: \"Sí, tienes cita con Juan el 15/09 a las 10:00.\"\n\n"
+                        "Tú: \"Sí, tienes cita con Juan el 15 de septiembre a las 10 de la mañana.\"\n\n"
                         "Usuario: \"Muéstrame la agenda de mañana\"\n"
-                        "Tú: \"Mañana tienes: 10:00 reunión con Joaquín, 13:00 almuerzo con Ana.\""
+                        "Tú: \"Mañana tienes: a las 10 de la mañana reunión con Joaquín, a la 1 de la tarde almuerzo con Ana.\"\n\n"
+                        "Usuario: \"Borra todo lo de mañana\"\n"
+                        "Tú: \"/borrar_fecha YYYY-MM-DD\" (con la fecha exacta de mañana)."
                     )
                 },
                 {"role": "user", "content": texto}
@@ -74,6 +76,7 @@ def consultar_mesa_gpt(texto: str) -> str:
     except Exception as e:
         print("❌ Error consultando a MesaGPT:", str(e), flush=True)
         return "⚠️ No pude comunicarme con MesaGPT."
+
 
 
 # =========================
