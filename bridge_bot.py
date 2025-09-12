@@ -114,13 +114,10 @@ def preparar_texto_para_audio(texto: str) -> str:
     - Horas de 24h → formato 12h con 'de la mañana/tarde/noche'.
     """
 
-    # 1. Eliminar símbolos molestos (asteriscos, guiones, flechas, comillas raras, etc.)
+    # 1. Eliminar símbolos molestos
     limpio = re.sub(r"[*_`•·→←↑↓➜➡️⬅️➤➔➞➝➛➙➚➘➤➣➥➦➧➨➩➪➫➬➭➮➯➱➲➳➵➸➻➼➽➾]", " ", texto)
 
-    # 2. Eliminar signos de puntuación (.,;:)
-    limpio = re.sub(r"[.,;:]", " ", limpio)
-
-    # 3. Fechas DD/MM/YYYY → "15 de septiembre de 2025"
+    # 2. Fechas DD/MM/YYYY → "15 de septiembre de 2025"
     def convertir_fecha(m):
         dia = int(m.group(1))
         mes = int(m.group(2))
@@ -133,7 +130,7 @@ def preparar_texto_para_audio(texto: str) -> str:
 
     limpio = re.sub(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", convertir_fecha, limpio)
 
-    # 4. Fechas DD/MM → "15 de septiembre"
+    # 3. Fechas DD/MM → "15 de septiembre"
     limpio = re.sub(
         r"\b(\d{1,2})/(\d{1,2})\b",
         lambda m: f"{int(m.group(1))} de "
@@ -141,7 +138,7 @@ def preparar_texto_para_audio(texto: str) -> str:
         limpio
     )
 
-    # 5. Horas HH:MM → formato 12h con 'mañana/tarde/noche'
+    # 4. Horas HH:MM o HH.MM → formato 12h
     def convertir_hora(m):
         h = int(m.group(1))
         mnt = int(m.group(2))
@@ -166,7 +163,11 @@ def preparar_texto_para_audio(texto: str) -> str:
         else:
             return f"{h} y {mnt} {sufijo}"
 
-    limpio = re.sub(r"\b(\d{1,2}):(\d{2})\b", convertir_hora, limpio)
+    # Soportar `10:00` y también `10.00`
+    limpio = re.sub(r"\b(\d{1,2})[:.](\d{2})\b", convertir_hora, limpio)
+
+    # 5. Eliminar puntos y comas que no sean horas
+    limpio = limpio.replace(",", " ")
 
     # 6. Reducir espacios múltiples
     limpio = re.sub(r"\s+", " ", limpio)
