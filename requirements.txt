@@ -4,3 +4,4 @@ python-telegram-bot==20.6
 requests
 openai
 gTTS==2.5.1
+schedule
