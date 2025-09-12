@@ -12,12 +12,15 @@ BRIDGE_API = f"https://api.telegram.org/bot{BRIDGE_TOKEN}/sendMessage"
 
 
 # === RUTA WEBHOOK ===
+
+
 @app.route("/", methods=["POST"])
 def webhook():
     data = request.get_json(force=True)
     print("📩 Llego update:", data, flush=True)
 
     if "message" not in data:
+        print("❌ No hay campo 'message' en el update", flush=True)
         return {"ok": True}
 
     chat_id = data["message"]["chat"]["id"]
@@ -25,8 +28,13 @@ def webhook():
     print(f"➡️ Mensaje recibido: {text}", flush=True)
 
     try:
-        # Detectar si es comando o agenda
-        if text.startswith("/") or "agenda" in text.lower() or "cita" in text.lower():
+        if not text:  # 👈 si está vacío
+            print("⚠️ Mensaje sin texto, BridgeBot responde por fallback", flush=True)
+            requests.post(BRIDGE_API, json={
+                "chat_id": chat_id,
+                "text": "🤖 MesaGPT: recibí tu mensaje (sin texto)"
+            })
+        elif text.startswith("/") or "agenda" in text.lower() or "cita" in text.lower():
             print("🔗 Reenviando update completo a Orbis...", flush=True)
             r = requests.post(ORBIS_URL, json=data)
             print("Respuesta Orbis:", r.text, flush=True)
@@ -41,6 +49,7 @@ def webhook():
         print("❌ Error procesando mensaje:", str(e), flush=True)
 
     return {"ok": True}
+
 
 
 # === RUTA HOME ===
