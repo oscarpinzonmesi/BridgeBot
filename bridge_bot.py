@@ -102,7 +102,7 @@ def webhook():
     data = request.get_json(force=True)
 
     # 👀 Debug: imprimir todo lo que manda Telegram
-    print("📦 Data cruda de Telegram:", data, flush=True)
+    print("📦 Datos crudos de Telegram:", data, flush=True)
 
     if "message" not in data:
         return {"ok": True}
@@ -115,19 +115,19 @@ def webhook():
         print(f"📩 Telegram → BridgeBot (texto): {text}", flush=True)
         mesa_data = {"chat_id": chat_id, "orden": text}
 
-    # Caso 2: mensaje de voz
+    # Caso 2: mensaje de voz (nota de voz en formato ogg)
     elif "voice" in data["message"]:
         file_id = data["message"]["voice"]["file_id"]
         print(f"🎤 Telegram → BridgeBot (voice): {file_id}", flush=True)
         ogg_file = descargar_voz(file_id)
         if ogg_file:
             transcripcion = transcribir_voz(ogg_file)
-            print(f"📝 Transcripción: {transcripcion}", flush=True)
+            print(f"📝 Transcripción (voice): {transcripcion}", flush=True)
             mesa_data = {"chat_id": chat_id, "orden": transcripcion}
         else:
-            return jsonify({"error": "No se pudo descargar el audio"}), 500
+            return jsonify({"error": "No se pudo descargar el audio (voice)"}), 500
 
-    # Caso 3: mensaje de audio (archivo adjunto)
+    # Caso 3: mensaje de audio (archivo de música / mp3 / ogg)
     elif "audio" in data["message"]:
         file_id = data["message"]["audio"]["file_id"]
         print(f"🎶 Telegram → BridgeBot (audio): {file_id}", flush=True)
@@ -137,7 +137,19 @@ def webhook():
             print(f"📝 Transcripción (audio): {transcripcion}", flush=True)
             mesa_data = {"chat_id": chat_id, "orden": transcripcion}
         else:
-            return jsonify({"error": "No se pudo descargar el audio"}), 500
+            return jsonify({"error": "No se pudo descargar el audio (audio)"}), 500
+
+    # Caso 4: mensaje de video_note (nota de voz redonda en Telegram)
+    elif "video_note" in data["message"]:
+        file_id = data["message"]["video_note"]["file_id"]
+        print(f"🎥 Telegram → BridgeBot (video_note): {file_id}", flush=True)
+        ogg_file = descargar_voz(file_id)
+        if ogg_file:
+            transcripcion = transcribir_voz(ogg_file)
+            print(f"📝 Transcripción (video_note): {transcripcion}", flush=True)
+            mesa_data = {"chat_id": chat_id, "orden": transcripcion}
+        else:
+            return jsonify({"error": "No se pudo descargar el video_note"}), 500
 
     else:
         return {"ok": True}
@@ -145,6 +157,7 @@ def webhook():
     # Redirigir a /mesa internamente
     with app.test_request_context("/mesa", method="POST", json=mesa_data):
         return mesa()
+
 
 
 
