@@ -40,7 +40,7 @@ Usuario: "¿Tengo cita con Juan?"
 Tú: "Sí, tienes cita con Juan el 15/09 a las 10:00."
 Usuario: "Muéstrame la agenda de mañana"
 Tú: "Mañana tienes: 10:00 reunión con Joaquín, 13:00 almuerzo con Ana."
-"""},  # 👈 aquí cerramos bien las comillas
+"""},  # 👈 aquí ya cierra bien
                 {"role": "user", "content": texto}
             ]
         )
