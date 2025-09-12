@@ -169,6 +169,26 @@ def enviar_audio(chat_id: int | str, texto: str):
         print("❌ Error enviando audio:", str(e), flush=True)
         requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto})
 
+# =========================
+# Alarmas (Orbis → Telegram)
+# =========================
+def enviar_alarma(chat_id: int | str, mensaje: str, prefer_audio: bool = False):
+    """
+    Envía un recordatorio/alarma al usuario.
+    Si prefer_audio=True, lo envía como nota de voz (gTTS).
+    Si no, lo envía como texto normal.
+    """
+    try:
+        if prefer_audio:
+            enviar_audio(chat_id, f"⏰ Recordatorio: {mensaje}")
+        else:
+            requests.post(
+                BRIDGE_API,
+                json={"chat_id": chat_id, "text": f"⏰ Recordatorio: {mensaje}"}
+            )
+        print(f"✅ Alarma enviada a {chat_id}: {mensaje}", flush=True)
+    except Exception as e:
+        print("❌ Error enviando alarma:", str(e), flush=True)
 
 
 # =========================
