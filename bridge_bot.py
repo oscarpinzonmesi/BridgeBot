@@ -108,16 +108,19 @@ def transcribir_audio(file_path: str) -> str:
 
 def preparar_texto_para_audio(texto: str) -> str:
     """
-    Limpia el texto para que suene natural al convertirlo a voz.
-    - Quita asteriscos, guiones, comas, puntos y caracteres de markdown.
-    - Convierte fechas 15/09 → '15 de septiembre'.
-    - Convierte fechas 15/09/2025 → '15 de septiembre de 2025'.
-    - Convierte horas 10:00 → '10 en punto'.
+    Limpia y adapta el texto para que suene natural al convertirlo a voz.
+    - Quita símbolos, flechas, guiones, comas, puntos.
+    - Convierte fechas y horas a un formato conversacional.
+    - Horas de 24h → formato 12h con 'de la mañana/tarde/noche'.
     """
-    # 1. Quitar símbolos innecesarios (*, _, `, -, –, —)
-    limpio = re.sub(r"[*_`–—-]", " ", texto)
 
-    # 2. Fechas DD/MM/YYYY → "15 de septiembre de 2025"
+    # 1. Eliminar símbolos molestos (asteriscos, guiones, flechas, comillas raras, etc.)
+    limpio = re.sub(r"[*_`•·→←↑↓➜➡️⬅️➤➔➞➝➛➙➚➘➤➣➥➦➧➨➩➪➫➬➭➮➯➱➲➳➵➸➻➼➽➾]", " ", texto)
+
+    # 2. Eliminar signos de puntuación (.,;:)
+    limpio = re.sub(r"[.,;:]", " ", limpio)
+
+    # 3. Fechas DD/MM/YYYY → "15 de septiembre de 2025"
     def convertir_fecha(m):
         dia = int(m.group(1))
         mes = int(m.group(2))
@@ -130,7 +133,7 @@ def preparar_texto_para_audio(texto: str) -> str:
 
     limpio = re.sub(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", convertir_fecha, limpio)
 
-    # 3. Fechas DD/MM → "15 de septiembre"
+    # 4. Fechas DD/MM → "15 de septiembre"
     limpio = re.sub(
         r"\b(\d{1,2})/(\d{1,2})\b",
         lambda m: f"{int(m.group(1))} de "
@@ -138,22 +141,38 @@ def preparar_texto_para_audio(texto: str) -> str:
         limpio
     )
 
-    # 4. Horas HH:MM → "10 en punto" o "10 y 30"
-    limpio = re.sub(
-        r"\b(\d{1,2}):(\d{2})\b",
-        lambda m: f"{int(m.group(1))} en punto"
-        if m.group(2) == "00"
-        else f"{int(m.group(1))} y {int(m.group(2))}",
-        limpio
-    )
+    # 5. Horas HH:MM → formato 12h con 'mañana/tarde/noche'
+    def convertir_hora(m):
+        h = int(m.group(1))
+        mnt = int(m.group(2))
+        sufijo = ""
 
-    # 5. Quitar comas y puntos (., ,)
-    limpio = limpio.replace(",", " ").replace(".", " ")
+        if h == 0:
+            h = 12
+            sufijo = "de la noche"
+        elif 1 <= h < 12:
+            sufijo = "de la mañana"
+        elif h == 12:
+            sufijo = "del mediodía"
+        elif 13 <= h < 19:
+            h -= 12
+            sufijo = "de la tarde"
+        else:
+            h -= 12
+            sufijo = "de la noche"
 
-    # 6. Reducir espacios dobles
+        if mnt == 0:
+            return f"{h} {sufijo}"
+        else:
+            return f"{h} y {mnt} {sufijo}"
+
+    limpio = re.sub(r"\b(\d{1,2}):(\d{2})\b", convertir_hora, limpio)
+
+    # 6. Reducir espacios múltiples
     limpio = re.sub(r"\s+", " ", limpio)
 
     return limpio.strip()
+
 
 
 
