@@ -89,16 +89,27 @@ def mesa():
         respuesta_mesa = consultar_mesa_gpt(orden)
         print(f"🤖 MesaGPT interpretó: {orden} → {respuesta_mesa}", flush=True)
 
+        # === 1. Caso: respuesta es comando para Orbis ===
         if respuesta_mesa.startswith("/"):
             r = requests.post(ORBIS_API, json={"texto": respuesta_mesa})
             try:
                 respuesta_orbis = r.json().get("respuesta", "❌ Orbis no devolvió respuesta")
             except:
                 respuesta_orbis = "⚠️ Error: Orbis devolvió algo inesperado"
-            # MesaGPT filtra y responde natural al usuario
-            requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": respuesta_orbis})
+
+            # 👇 Aquí decido si mando en audio o en texto
+            if "audio" in orden.lower() or "voz" in orden.lower():
+                enviar_audio(chat_id, respuesta_orbis)
+            else:
+                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": respuesta_orbis})
+
+        # === 2. Caso: respuesta normal de MesaGPT ===
         else:
-            requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": respuesta_mesa})
+            if "audio" in orden.lower() or "voz" in orden.lower():
+                enviar_audio(chat_id, respuesta_mesa)
+            else:
+                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": respuesta_mesa})
+
     except Exception as e:
         print("❌ Error en /mesa:", str(e), flush=True)
         return jsonify({"error": str(e)}), 500
