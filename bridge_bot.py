@@ -8,6 +8,9 @@ import tempfile
 from gtts import gTTS
 from datetime import datetime, timezone, timedelta
 import re
+import schedule
+import threading
+import time
 app = Flask(__name__)
 
 # =========================
@@ -317,9 +320,7 @@ def ping():
 # =========================
 # Scheduler de alertas
 # =========================
-import schedule
-import threading
-import time
+
 
 def revisar_agenda_y_enviar_alertas():
     """
