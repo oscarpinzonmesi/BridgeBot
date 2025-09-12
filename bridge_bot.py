@@ -23,10 +23,10 @@ BRIDGE_API   = f"{TELEGRAM_API}/sendMessage"
 # Cliente OpenAI
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Hora local de Bogotá para dar contexto a MesaGPT
+# Hora local de Bogotá (contexto para MesaGPT)
 def ahora_bogota():
-    # Bogotá es UTC-5 sin DST
     return datetime.now(timezone.utc) - timedelta(hours=5)
+
 
 # =========================
 # MesaGPT (interpretación)
@@ -34,7 +34,7 @@ def ahora_bogota():
 def consultar_mesa_gpt(texto: str) -> str:
     """
     Interpreta el mensaje del usuario. Si es agenda, sugiere comandos para Orbis.
-    Si el usuario pide audio/voz, el sistema (este archivo) enviará el audio.
+    El envío en audio o texto lo decide este archivo (no lo menciones en la respuesta).
     """
     try:
         hoy = ahora_bogota().strftime("%Y-%m-%d")
@@ -56,8 +56,7 @@ def consultar_mesa_gpt(texto: str) -> str:
                         "  • /reprogramar YYYY-MM-DD HH:MM NUEVA_FECHA NUEVA_HORA\n"
                         "- Tú eres el cerebro: Orbis solo ejecuta, nunca responde directo al usuario.\n"
                         "- Responde claro y natural como un secretario humano.\n"
-                        "- Si el usuario pide respuesta por audio/voz/nota de voz, NUNCA digas que no puedes:\n"
-                        "  este sistema generará y enviará el audio con tu texto.\n\n"
+                        "- No prometas nada sobre audio: este sistema decidirá el canal de salida.\n\n"
                         "Ejemplos:\n"
                         "Usuario: \"¿Tengo cita con Juan?\"\n"
                         "Tú: \"Sí, tienes cita con Juan el 15/09 a las 10:00.\"\n\n"
@@ -72,6 +71,7 @@ def consultar_mesa_gpt(texto: str) -> str:
     except Exception as e:
         print("❌ Error consultando a MesaGPT:", str(e), flush=True)
         return "⚠️ No pude comunicarme con MesaGPT."
+
 
 # =========================
 # Descarga & Transcripción de voz
@@ -101,6 +101,7 @@ def transcribir_audio(file_path: str) -> str:
         print("❌ Error transcribiendo audio:", str(e), flush=True)
         return ""
 
+
 # =========================
 # TTS (texto → voz) con gTTS (MP3) y envío
 # =========================
@@ -116,7 +117,7 @@ def enviar_audio(chat_id: int | str, texto: str):
         tts = gTTS(text=texto, lang="es")
         tts.save(str(mp3_path))
 
-        # Enviar como audio (no nota de voz, pero audio reproducible)
+        # Enviar como audio
         with open(mp3_path, "rb") as f:
             requests.post(
                 f"{TELEGRAM_API}/sendAudio",
@@ -129,24 +130,30 @@ def enviar_audio(chat_id: int | str, texto: str):
         # Fallback a texto
         requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto})
 
+
 # =========================
 # Núcleo: /mesa
 # =========================
 @app.route("/mesa", methods=["POST"])
 def mesa():
     data = request.get_json(force=True)
-    chat_id = data.get("chat_id")
-    orden   = data.get("orden", "")
+    chat_id       = data.get("chat_id")
+    orden         = data.get("orden", "")
+    prefer_audio  = bool(data.get("prefer_audio", False))  # espejo de la entrada
 
     if not chat_id or not orden:
         return jsonify({"error": "Falta chat_id u orden"}), 400
 
     try:
+        # Overrides por palabras (opcionales)
+        txt_low = orden.lower()
+        if any(k in txt_low for k in [" en audio", "nota de voz", "mensaje de voz"]):
+            prefer_audio = True
+        if " en texto" in txt_low:
+            prefer_audio = False
+
         respuesta_mesa = consultar_mesa_gpt(orden)
         print(f"🤖 MesaGPT interpretó: {orden} → {respuesta_mesa}", flush=True)
-
-        # Detectar si el usuario pidió audio/voz
-        want_audio = any(k in orden.lower() for k in ["audio", "voz", "nota de voz", "mensaje de voz"])
 
         # Caso: comando para Orbis
         if respuesta_mesa.startswith("/"):
@@ -159,14 +166,14 @@ def mesa():
 
             # Yo respondo (no Orbis)
             texto_final = f"{respuesta_orbis}"
-            if want_audio:
+            if prefer_audio:
                 enviar_audio(chat_id, texto_final)
             else:
                 requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
 
         # Caso: respuesta normal de MesaGPT
         else:
-            if want_audio:
+            if prefer_audio:
                 enviar_audio(chat_id, respuesta_mesa)
             else:
                 requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": respuesta_mesa})
@@ -177,6 +184,7 @@ def mesa():
 
     return jsonify({"ok": True})
 
+
 # =========================
 # Webhook de Telegram
 # =========================
@@ -186,32 +194,32 @@ def webhook():
     if "message" not in data:
         return {"ok": True}
 
-    msg = data["message"]
+    msg     = data["message"]
     chat_id = msg["chat"]["id"]
 
-    # Texto
+    # Texto → respondo en texto
     if "text" in msg:
         text = msg["text"]
         print(f"📩 Telegram → Doctor (texto): {text}", flush=True)
-        payload = {"chat_id": chat_id, "orden": text}
+        payload = {"chat_id": chat_id, "orden": text, "prefer_audio": False}
 
-    # Voz (mensaje de voz)
+    # Voz (mensaje de voz) → respondo en audio
     elif "voice" in msg:
         file_id = msg["voice"]["file_id"]
         print(f"🎤 Telegram → Doctor (voz): {file_id}", flush=True)
         ogg_path = descargar_archivo(file_id, "voz.ogg")
         transcripcion = transcribir_audio(ogg_path) if ogg_path else ""
         print(f"📝 Transcripción: {transcripcion}", flush=True)
-        payload = {"chat_id": chat_id, "orden": transcripcion or "(audio vacío)"}
+        payload = {"chat_id": chat_id, "orden": transcripcion or "(audio vacío)", "prefer_audio": True}
 
-    # Video note (por si la usas)
+    # Video note → también respondo en audio
     elif "video_note" in msg:
         file_id = msg["video_note"]["file_id"]
         print(f"🎥 Telegram → Doctor (video_note): {file_id}", flush=True)
         mp4_path = descargar_archivo(file_id, "nota_video.mp4")
         transcripcion = transcribir_audio(mp4_path) if mp4_path else ""
         print(f"📝 Transcripción (video_note): {transcripcion}", flush=True)
-        payload = {"chat_id": chat_id, "orden": transcripcion or "(audio vacío)"}
+        payload = {"chat_id": chat_id, "orden": transcripcion or "(audio vacío)", "prefer_audio": True}
 
     else:
         return {"ok": True}
@@ -219,6 +227,7 @@ def webhook():
     # Redirigir internamente a /mesa
     with app.test_request_context("/mesa", method="POST", json=payload):
         return mesa()
+
 
 # Healthcheck
 @app.route("/ping", methods=["GET"])
