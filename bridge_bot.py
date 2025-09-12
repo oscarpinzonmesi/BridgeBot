@@ -88,13 +88,19 @@ def mesa():
         respuesta_mesa = consultar_mesa_gpt(orden)
         print(f"🤖 MesaGPT interpretó: {orden}  →  {respuesta_mesa}", flush=True)
 
+        # 🧹 Normalizar respuesta (quitar comillas, espacios extra, etc.)
+        respuesta_mesa = respuesta_mesa.strip().strip("'").strip('"')
+
         # Paso 2: si es un comando de agenda (/...), lo pasamos a Orbis
         if respuesta_mesa.startswith("/"):
-            r = requests.post(ORBIS_API, json={"texto": respuesta_mesa})
             try:
+                r = requests.post(ORBIS_API, json={"texto": respuesta_mesa})
                 respuesta_orbis = r.json().get("respuesta", "❌ Orbis no devolvió respuesta")
-            except Exception:
+            except Exception as e:
+                print("❌ Error consultando Orbis:", str(e), flush=True)
                 respuesta_orbis = "⚠️ Error: Orbis devolvió algo inesperado"
+
+            # Mandar la respuesta de Orbis al chat de Telegram
             requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": respuesta_orbis})
         else:
             # Si no es comando, es respuesta normal de MesaGPT
