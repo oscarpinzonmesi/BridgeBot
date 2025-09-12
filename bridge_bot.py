@@ -7,7 +7,6 @@ app = Flask(__name__)
 # === CONFIG ===
 BRIDGE_TOKEN = os.getenv("TELEGRAM_TOKEN")   # Token del bot BridgeBot
 ORBIS_API = os.getenv("ORBIS_API")           # URL de Orbis: https://orbis-xxx.onrender.com/procesar
-BRIDGEBOT_URL = os.getenv("BRIDGEBOT_URL", "https://bridgebot-shtq.onrender.com")
 
 BRIDGE_API = f"https://api.telegram.org/bot{BRIDGE_TOKEN}/sendMessage"
 
@@ -42,7 +41,7 @@ def mesa():
 # === TELEGRAM WEBHOOK ===
 @app.route("/", methods=["POST"])
 def webhook():
-    """Telegram envía los mensajes aquí → BridgeBot los reenvía a MesaGPT"""
+    """Telegram envía los mensajes aquí → BridgeBot los manda a MesaGPT"""
     data = request.get_json(force=True)
 
     if "message" not in data:
@@ -53,9 +52,10 @@ def webhook():
 
     print(f"📩 Telegram → BridgeBot: {text}", flush=True)
 
-    # Simulación de paso por MesaGPT (ahora se llama al endpoint /mesa con la URL pública)
-    orden_simulada = text
-    requests.post(f"{BRIDGEBOT_URL}/mesa", json={"chat_id": chat_id, "orden": orden_simulada})
+    # 🔗 En vez de hacer requests a sí mismo, llamamos directamente a la lógica de /mesa
+    mesa_data = {"chat_id": chat_id, "orden": text}
+    with app.test_request_context("/mesa", method="POST", json=mesa_data):
+        return mesa()
 
     return {"ok": True}
 
