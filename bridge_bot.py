@@ -15,27 +15,30 @@ BRIDGE_API = f"https://api.telegram.org/bot{BRIDGE_TOKEN}/sendMessage"
 @app.route("/", methods=["POST"])
 def webhook():
     data = request.get_json(force=True)
-    print("📩 Llego update:", data, flush=True)   # DEBUG
+    print("📩 Llego update:", data, flush=True)
 
-    if "message" in data:
-        chat_id = data["message"]["chat"]["id"]
-        text = data["message"].get("text", "")
-        print(f"➡️ Mensaje recibido: {text}", flush=True)
+    if "message" not in data:
+        return {"ok": True}
 
-        try:
-            if text.startswith("/") or "agenda" in text.lower() or "cita" in text.lower():
-                print("🔗 Reenviando update completo a Orbis...", flush=True)
-                r = requests.post(ORBIS_URL, json=data)
-                print("Respuesta Orbis:", r.text, flush=True)
-            else:
-                print("🤖 Respondiendo desde BridgeBot", flush=True)
-                r = requests.post(BRIDGE_API, json={
-                    "chat_id": chat_id,
-                    "text": f"🤖 MesaGPT: te escuché → {text}"
-                })
-                print("Respuesta BridgeBot:", r.text, flush=True)
-        except Exception as e:
-            print("❌ Error procesando mensaje:", str(e), flush=True)
+    chat_id = data["message"]["chat"]["id"]
+    text = data["message"].get("text", "")
+    print(f"➡️ Mensaje recibido: {text}", flush=True)
+
+    try:
+        # Detectar si es comando o agenda
+        if text.startswith("/") or "agenda" in text.lower() or "cita" in text.lower():
+            print("🔗 Reenviando update completo a Orbis...", flush=True)
+            r = requests.post(ORBIS_URL, json=data)
+            print("Respuesta Orbis:", r.text, flush=True)
+        else:
+            print("🤖 Respondiendo desde BridgeBot", flush=True)
+            r = requests.post(BRIDGE_API, json={
+                "chat_id": chat_id,
+                "text": f"🤖 MesaGPT: te escuché → {text}"
+            })
+            print("Respuesta BridgeBot:", r.text, flush=True)
+    except Exception as e:
+        print("❌ Error procesando mensaje:", str(e), flush=True)
 
     return {"ok": True}
 
