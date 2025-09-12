@@ -102,28 +102,19 @@ def transcribir_audio(file_path: str) -> str:
         return ""
 
 
-# =========================
-# TTS (texto → voz) con gTTS (MP3) y envío
-# =========================
-# =========================
-# Limpieza de texto para TTS
-# =========================
-
 
 def preparar_texto_para_audio(texto: str) -> str:
-    # 1. Eliminar símbolos molestos
-    limpio = re.sub(r"[*#\-]+", " ", texto)
+    """
+    Limpia el texto para que suene natural al convertirlo a voz.
+    - Quita asteriscos, guiones, comas, puntos y caracteres de markdown.
+    - Convierte fechas 15/09 → '15 de septiembre'.
+    - Convierte fechas 15/09/2025 → '15 de septiembre de 2025'.
+    - Convierte horas 10:00 → '10 en punto'.
+    """
+    # 1. Quitar símbolos innecesarios (*, _, `, -, –, —)
+    limpio = re.sub(r"[*_`–—-]", " ", texto)
 
-    # 2. Reemplazar horas tipo HH:MM
-    limpio = re.sub(
-        r"\b(\d{1,2}):(\d{2})\b",
-        lambda m: f"{int(m.group(1))} horas con {m.group(2)} minutos"
-        if m.group(2) != "00"
-        else f"{int(m.group(1))} en punto",
-        limpio,
-    )
-
-    # 3. Reemplazar fechas tipo DD/MM/YYYY
+    # 2. Fechas DD/MM/YYYY → "15 de septiembre de 2025"
     def convertir_fecha(m):
         dia = int(m.group(1))
         mes = int(m.group(2))
@@ -136,10 +127,31 @@ def preparar_texto_para_audio(texto: str) -> str:
 
     limpio = re.sub(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", convertir_fecha, limpio)
 
-    # 4. Eliminar comas y puntos
+    # 3. Fechas DD/MM → "15 de septiembre"
+    limpio = re.sub(
+        r"\b(\d{1,2})/(\d{1,2})\b",
+        lambda m: f"{int(m.group(1))} de "
+                  f"{['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'][int(m.group(2))-1]}",
+        limpio
+    )
+
+    # 4. Horas HH:MM → "10 en punto" o "10 y 30"
+    limpio = re.sub(
+        r"\b(\d{1,2}):(\d{2})\b",
+        lambda m: f"{int(m.group(1))} en punto"
+        if m.group(2) == "00"
+        else f"{int(m.group(1))} y {int(m.group(2))}",
+        limpio
+    )
+
+    # 5. Quitar comas y puntos (., ,)
     limpio = limpio.replace(",", " ").replace(".", " ")
 
+    # 6. Reducir espacios dobles
+    limpio = re.sub(r"\s+", " ", limpio)
+
     return limpio.strip()
+
 
 
 # =========================
@@ -191,9 +203,6 @@ def enviar_alarma(chat_id: int | str, mensaje: str, prefer_audio: bool = False):
         print("❌ Error enviando alarma:", str(e), flush=True)
 
 
-# =========================
-# Núcleo: /mesa
-# =========================
 @app.route("/mesa", methods=["POST"])
 def mesa():
     data = request.get_json(force=True)
@@ -215,23 +224,34 @@ def mesa():
         respuesta_mesa = consultar_mesa_gpt(orden)
         print(f"🤖 MesaGPT interpretó: {orden} → {respuesta_mesa}", flush=True)
 
-        # Caso: comando para Orbis
+        # ============================
+        # Detectar comandos (/agenda, /borrar_todo, etc.)
+        # ============================
+        comando = None
         if respuesta_mesa.startswith("/"):
+            comando = respuesta_mesa.strip()
+        else:
+            match = re.search(r"(/[\w_]+.*)", respuesta_mesa)
+            if match:
+                comando = match.group(1).strip()
+
+        if comando:
             # Pasar chat_id a Orbis por si programa recordatorios
-            r = requests.post(ORBIS_API, json={"texto": respuesta_mesa, "chat_id": chat_id})
+            r = requests.post(ORBIS_API, json={"texto": comando, "chat_id": chat_id})
             try:
                 respuesta_orbis = r.json().get("respuesta", "❌ No obtuve respuesta de la agenda.")
             except Exception:
                 respuesta_orbis = "⚠️ Error: la agenda devolvió un formato inesperado."
 
-            # Yo respondo (no Orbis)
             texto_final = f"{respuesta_orbis}"
             if prefer_audio:
                 enviar_audio(chat_id, texto_final)
             else:
                 requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
 
-        # Caso: respuesta normal de MesaGPT
+        # ============================
+        # Respuesta normal de MesaGPT
+        # ============================
         else:
             if prefer_audio:
                 enviar_audio(chat_id, respuesta_mesa)
@@ -243,6 +263,7 @@ def mesa():
         return jsonify({"error": str(e)}), 500
 
     return jsonify({"ok": True})
+
 
 
 # =========================
@@ -293,3 +314,52 @@ def webhook():
 @app.route("/ping", methods=["GET"])
 def ping():
     return "✅ BridgeBot activo en Render"
+# =========================
+# Scheduler de alertas
+# =========================
+import schedule
+import threading
+import time
+
+def revisar_agenda_y_enviar_alertas():
+    """
+    Consulta a Orbis si hay eventos próximos y manda recordatorios.
+    Orbis debe implementar el comando /proximos y devolver un JSON:
+    {
+        "eventos": [
+            {"chat_id": 5155863903, "mensaje": "Reunión con Joaquín a las 10:00"},
+            {"chat_id": 5155863903, "mensaje": "Almuerzo con Ana a las 13:00"}
+        ]
+    }
+    """
+    try:
+        r = requests.post(ORBIS_API, json={"texto": "/proximos"})
+        if r.status_code != 200:
+            print("⚠️ Orbis no respondió correctamente", flush=True)
+            return
+
+        eventos = r.json().get("eventos", [])
+        for ev in eventos:
+            chat_id = ev.get("chat_id")
+            mensaje = ev.get("mensaje")
+            if chat_id and mensaje:
+                enviar_alarma(chat_id, mensaje, prefer_audio=True)
+
+    except Exception as e:
+        print("❌ Error revisando agenda:", str(e), flush=True)
+
+
+def iniciar_scheduler():
+    # Revisar la agenda cada minuto
+    schedule.every(1).minutes.do(revisar_agenda_y_enviar_alertas)
+
+    def run_scheduler():
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
+
+    threading.Thread(target=run_scheduler, daemon=True).start()
+
+
+# Iniciar scheduler automáticamente al levantar el bot
+iniciar_scheduler()
