@@ -150,6 +150,7 @@ def preparar_texto_para_audio(texto: str) -> str:
         return f"{h12} {('y ' + str(mnt)) if mnt else ''} {suf}".strip()
     limpio = re.sub(r"\b(\d{1,2})[:.](\d{2})\b", conv_hora, limpio)
 
+
     # Espacios y signos repetidos
     limpio = re.sub(r"[,:;]{2,}", lambda m: m.group(0)[0], limpio)
     limpio = re.sub(r"\s+", " ", limpio).strip()
