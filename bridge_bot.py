@@ -30,12 +30,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 def ahora_bogota():
     return datetime.now(timezone.utc) - timedelta(hours=5)
 
-
 def consultar_mesa_gpt(texto: str) -> str:
-    """
-    Interpreta el mensaje del usuario. Si es agenda, sugiere comandos para Orbis.
-    El envío en audio o texto lo decide este archivo (no lo menciones en la respuesta).
-    """
     try:
         hoy = ahora_bogota().strftime("%Y-%m-%d")
         respuesta = client.chat.completions.create(
@@ -45,28 +40,36 @@ def consultar_mesa_gpt(texto: str) -> str:
                     "role": "system",
                     "content": (
                         "Eres MesaGPT, el asistente personal de Doctor Mesa.\n"
-                        f"Hoy es {hoy} en zona horaria America/Bogota.\n"
-                        "- Entiende lenguaje natural (texto o voz).\n"
-                        "- Si el mensaje es de agenda, conviértelo a comandos para Orbis, ej:\n"
+                        f"Hoy es {hoy} en zona horaria America/Bogota.\n\n"
+
+                        "⚠️ REGLAS IMPORTANTES:\n"
+                        "- Nunca inventes citas ni agendas. Solo Orbis sabe la verdad.\n"
+                        "- Si el usuario pide ver, borrar, modificar o reprogramar la agenda, "
+                        "SIEMPRE responde con un comando válido para Orbis.\n"
+                        "- Los comandos de agenda son:\n"
                         "  • /agenda\n"
                         "  • /registrar YYYY-MM-DD HH:MM Tarea\n"
                         "  • /borrar YYYY-MM-DD HH:MM\n"
-                        "  • /buscar Nombre\n"
+                        "  • /borrar_fecha YYYY-MM-DD\n"
                         "  • /borrar_todo\n"
-                        "  • /borrar_fecha YYYY-MM-DD   ← (nuevo, para borrar todas las citas de un día específico)\n"
+                        "  • /buscar Nombre\n"
+                        "  • /buscar_fecha YYYY-MM-DD\n"
+                        "  • /cuando Nombre\n"
                         "  • /reprogramar YYYY-MM-DD HH:MM NUEVA_FECHA NUEVA_HORA\n"
-                        "- Si el usuario dice: 'borra lo de mañana', 'elimínalo todo para el 15 de septiembre', etc., "
-                        "usa /borrar_fecha con la fecha correspondiente en formato YYYY-MM-DD.\n"
-                        "- Tú eres el cerebro: Orbis solo ejecuta, nunca responde directo al usuario.\n"
-                        "- Responde claro y natural como un secretario humano.\n"
-                        "- No prometas nada sobre audio: este sistema decidirá el canal de salida.\n\n"
-                        "Ejemplos:\n"
-                        "Usuario: \"¿Tengo cita con Juan?\"\n"
-                        "Tú: \"Sí, tienes cita con Juan el 15 de septiembre a las 10 de la mañana.\"\n\n"
-                        "Usuario: \"Muéstrame la agenda de mañana\"\n"
-                        "Tú: \"Mañana tienes: a las 10 de la mañana reunión con Joaquín, a la 1 de la tarde almuerzo con Ana.\"\n\n"
+                        "  • /modificar YYYY-MM-DD HH:MM Nuevo texto\n\n"
+
+                        "- Ejemplos:\n"
+                        "Usuario: \"¿Qué tengo mañana?\"\n"
+                        f"Tú: \"/buscar_fecha {hoy}\"  (o la fecha que corresponda)\n\n"
+
                         "Usuario: \"Borra todo lo de mañana\"\n"
-                        "Tú: \"/borrar_fecha YYYY-MM-DD\" (con la fecha exacta de mañana)."
+                        f"Tú: \"/borrar_fecha {hoy}\"\n\n"
+
+                        "Usuario: \"Muéstrame la agenda\"\n"
+                        "Tú: \"/agenda\"\n\n"
+
+                        "- Si la petición NO es de agenda, responde normal como un asistente humano.\n"
+                        "- No uses nunca flechas, símbolos raros ni inventes horarios."
                     )
                 },
                 {"role": "user", "content": texto}
@@ -76,7 +79,6 @@ def consultar_mesa_gpt(texto: str) -> str:
     except Exception as e:
         print("❌ Error consultando a MesaGPT:", str(e), flush=True)
         return "⚠️ No pude comunicarme con MesaGPT."
-
 
 
 # =========================
