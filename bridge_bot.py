@@ -13,6 +13,8 @@ import threading
 import time
 app = Flask(__name__)
 
+ULTIMA_AGENDA = {}
+
 # =========================
 # CONFIG
 # =========================
@@ -60,7 +62,9 @@ def consultar_mesa_gpt(texto: str) -> str:
                         "  • /cuando Nombre\n"
                         "  • /reprogramar YYYY-MM-DD HH:MM NUEVA_FECHA NUEVA_HORA\n"
                         "  • /modificar YYYY-MM-DD HH:MM Nuevo texto\n"
-                        "- Si la petición NO es de agenda, responde natural como un asistente humano.\n\n"
+                        "- Nunca uses '/borrar_todo' salvo que el usuario diga explícitamente 'borra todo' o 'elimina toda la agenda'.\n"
+                        "- Si el usuario dice 'borra esa', 'borra esto' o algo ambiguo, responde con '__referencia__'.\n"
+                        "- Si no tienes contexto, responde '⚠️ No estoy seguro a qué cita te refieres'.\n\n"
                         "Ejemplos:\n"
                         "Usuario: '¿Tengo cita con Juan?'\n"
                         "Respuesta: '/buscar Juan'\n\n"
@@ -77,7 +81,6 @@ def consultar_mesa_gpt(texto: str) -> str:
     except Exception as e:
         print("❌ Error consultando a MesaGPT:", str(e), flush=True)
         return "⚠️ No pude comunicarme con MesaGPT."
-
 
 # =========================
 # Descarga & Transcripción de voz
@@ -239,29 +242,54 @@ def mesa():
         print(f"🤖 MesaGPT interpretó: {orden} → {respuesta_mesa}", flush=True)
 
         # ============================
-        # Detectar comandos (/agenda, /borrar_todo, etc.)
+        # Resolver comandos
         # ============================
         comando = None
         if respuesta_mesa.startswith("/"):
             comando = respuesta_mesa.strip()
+        elif respuesta_mesa == "__referencia__":
+            citas = ULTIMA_AGENDA.get(chat_id, [])
+            if citas:
+                primera = citas[0]  # Por ahora borramos la primera
+                comando = f"/borrar {primera['fecha']} {primera['hora']}"
+            else:
+                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": "⚠️ No tengo registrada ninguna agenda reciente para saber a qué te refieres."})
+                return jsonify({"ok": True})
         else:
             match = re.search(r"(/[\w_]+.*)", respuesta_mesa)
             if match:
                 comando = match.group(1).strip()
 
+        # ============================
+        # Confirmación de /borrar_todo
+        # ============================
+        if comando and comando.startswith("/borrar_todo") and "confirmar" not in comando:
+            requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": "⚠️ ¿Seguro que deseas borrar TODA la agenda? Responde con '/borrar_todo confirmar'"})
+            return jsonify({"ok": True})
+
         if comando:
-            # Pasar chat_id a Orbis por si programa recordatorios
+            # Pasar chat_id a Orbis
             r = requests.post(ORBIS_API, json={"texto": comando, "chat_id": chat_id})
             try:
                 respuesta_orbis = r.json().get("respuesta", "❌ No obtuve respuesta de la agenda.")
             except Exception:
                 respuesta_orbis = "⚠️ Error: la agenda devolvió un formato inesperado."
 
-            texto_final = f"{respuesta_orbis}"
+            # Guardar última agenda si aplica
+            if comando.startswith("/agenda") or comando.startswith("/buscar_fecha"):
+                citas = []
+                for linea in respuesta_orbis.splitlines():
+                    m = re.match(r"(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) → (.+)", linea.strip())
+                    if m:
+                        citas.append({"fecha": m.group(1), "hora": m.group(2), "texto": m.group(3)})
+                if citas:
+                    ULTIMA_AGENDA[chat_id] = citas
+
+            # Responder
             if prefer_audio:
-                enviar_audio(chat_id, texto_final)
+                enviar_audio(chat_id, respuesta_orbis)
             else:
-                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
+                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": respuesta_orbis})
 
         # ============================
         # Respuesta normal de MesaGPT
@@ -277,8 +305,6 @@ def mesa():
         return jsonify({"error": str(e)}), 500
 
     return jsonify({"ok": True})
-
-
 
 # =========================
 # Webhook de Telegram
