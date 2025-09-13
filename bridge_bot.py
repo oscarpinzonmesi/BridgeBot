@@ -120,12 +120,13 @@ def _parsear_fecha_es(texto: str) -> str | None:
     if re.search(r"\bmañana\b", t):
         return fecha_bogota(1)
     
-    # "<d> de este mes"
-    m = re.search(r"\b(\d{1,2})\s*(?:de\s+)?este\s+mes\b", t)
+    # dentro de _parsear_fecha_es, tras hoy/mañana:
+    m = re.search(r"\b(\d{1,2})\s*(?:de\s+)?este\s+mes\b", (texto or "").lower())
     if m:
         d = int(m.group(1))
         base = ahora_bogota()
-        return f"{base.year}-{str(base.month).zfill(2)}-{str(d).zfill(2)}"
+        return f"{base.year}-{base.month:02d}-{d:02d}"
+
 
     # ISO directo
     m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", t)
@@ -152,7 +153,7 @@ def _parsear_fecha_es(texto: str) -> str | None:
 
     return None
 
- def _parsear_hora_es(texto: str) -> str | None:
+def _parsear_hora_es(texto: str) -> str | None:
     """
     Devuelve HH:MM en 24h a partir de expresiones como:
     - 16:30, 4:30 pm, 4 pm
