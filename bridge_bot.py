@@ -11,8 +11,15 @@ import re
 import schedule
 import threading
 import time
+
 app = Flask(__name__)
 
+# =========================
+# MEMORIA
+# =========================
+# Recordar el último chat que habló con el bot (para alarmas)
+LAST_CHAT_ID = None
+# Memoria de la última agenda listada por chat (para "borra esa")
 ULTIMA_AGENDA = {}
 
 # =========================
@@ -28,10 +35,15 @@ BRIDGE_API   = f"{TELEGRAM_API}/sendMessage"
 # Cliente OpenAI
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+# =========================
 # Hora local de Bogotá (contexto para MesaGPT)
+# =========================
 def ahora_bogota():
     return datetime.now(timezone.utc) - timedelta(hours=5)
 
+# =========================
+# INTÉRPRETE (GPT)
+# =========================
 def consultar_mesa_gpt(texto: str) -> str:
     """
     Interpreta el mensaje del usuario. Si es agenda, convierte a comandos para Orbis.
@@ -110,19 +122,15 @@ def transcribir_audio(file_path: str) -> str:
         print("❌ Error transcribiendo audio:", str(e), flush=True)
         return ""
 
-
-
+# =========================
+# Texto → Voz (gTTS) y envío
+# =========================
 def preparar_texto_para_audio(texto: str) -> str:
     """
-    Prepara el texto para que se escuche natural en voz.
-    - Elimina flechas, guiones, comas y puntos innecesarios.
-    - Convierte fechas 15/09/2025 → "15 de septiembre de 2025".
-    - Convierte horas 24h (10:00, 13:00, 20:30) a 12h con 'de la mañana/tarde/noche'.
+    Limpia signos y formatea fechas/horas para que suene natural.
     """
-    # 1. Eliminar símbolos raros
     limpio = re.sub(r"[→←↑↓➜➡️⬅️➤➔•·\-\*_,\.]", " ", texto)
 
-    # 2. Fechas DD/MM/YYYY
     def convertir_fecha(m):
         dia, mes, anio = int(m.group(1)), int(m.group(2)), int(m.group(3))
         meses = [
@@ -132,7 +140,6 @@ def preparar_texto_para_audio(texto: str) -> str:
         return f"{dia} de {meses[mes-1]} de {anio}"
     limpio = re.sub(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", convertir_fecha, limpio)
 
-    # 3. Fechas DD/MM
     limpio = re.sub(
         r"\b(\d{1,2})/(\d{1,2})\b",
         lambda m: f"{int(m.group(1))} de "
@@ -140,11 +147,9 @@ def preparar_texto_para_audio(texto: str) -> str:
         limpio
     )
 
-    # 4. Horas HH:MM o HH.MM
     def convertir_hora(m):
         h = int(m.group(1))
         mnt = int(m.group(2))
-
         if h == 0:
             h12, suf = 12, "de la noche"
         elif 1 <= h < 12:
@@ -155,33 +160,21 @@ def preparar_texto_para_audio(texto: str) -> str:
             h12, suf = h - 12, "de la tarde"
         else:
             h12, suf = h - 12, "de la noche"
-
         if mnt == 0:
             return f"{h12} {suf}"
         else:
             return f"{h12} y {mnt} {suf}"
 
     limpio = re.sub(r"\b(\d{1,2})[:.](\d{2})\b", convertir_hora, limpio)
-
-    # 5. Quitar espacios múltiples
     limpio = re.sub(r"\s+", " ", limpio)
-
     return limpio.strip()
 
-
-
-
-# =========================
-# TTS (texto → voz) con gTTS (MP3) y envío
-# =========================
 def enviar_audio(chat_id: int | str, texto: str):
     """
-    Genera MP3 con gTTS y lo envía como audio (sendAudio).
-    Si algo falla, hace fallback a texto.
+    Genera MP3 con gTTS y lo envía como audio (sendAudio). Si algo falla, hace fallback a texto.
     """
     try:
         texto_para_leer = preparar_texto_para_audio(texto)
-
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
             mp3_path = Path(tmp.name)
         tts = gTTS(text=texto_para_leer, lang="es")
@@ -219,7 +212,9 @@ def enviar_alarma(chat_id: int | str, mensaje: str, prefer_audio: bool = False):
     except Exception as e:
         print("❌ Error enviando alarma:", str(e), flush=True)
 
-
+# =========================
+# Endpoint principal (control GPT)
+# =========================
 @app.route("/mesa", methods=["POST"])
 def mesa():
     data = request.get_json(force=True)
@@ -238,62 +233,149 @@ def mesa():
         if " en texto" in txt_low:
             prefer_audio = False
 
+        # 1) Interpretar con GPT (cerebro)
         respuesta_mesa = consultar_mesa_gpt(orden)
         print(f"🤖 MesaGPT interpretó: {orden} → {respuesta_mesa}", flush=True)
 
-        # ============================
-        # Resolver comandos
-        # ============================
+        # 2) Resolver comandos / referencias
         comando = None
         if respuesta_mesa.startswith("/"):
             comando = respuesta_mesa.strip()
         elif respuesta_mesa == "__referencia__":
             citas = ULTIMA_AGENDA.get(chat_id, [])
             if citas:
-                primera = citas[0]  # Por ahora borramos la primera
+                primera = citas[0]  # Heurística inicial: primera de la última agenda listada
                 comando = f"/borrar {primera['fecha']} {primera['hora']}"
             else:
-                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": "⚠️ No tengo registrada ninguna agenda reciente para saber a qué te refieres."})
+                msg = "⚠️ No tengo registrada una agenda reciente para saber qué borrar. Pídeme primero 'muéstrame la agenda'."
+                if prefer_audio:
+                    enviar_audio(chat_id, msg)
+                else:
+                    requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
                 return jsonify({"ok": True})
         else:
-            match = re.search(r"(/[\w_]+.*)", respuesta_mesa)
-            if match:
-                comando = match.group(1).strip()
+            m = re.search(r"(/[\w_]+.*)", respuesta_mesa)
+            if m:
+                comando = m.group(1).strip()
 
-        # ============================
-        # Confirmación de /borrar_todo
-        # ============================
+        # 3) Confirmación explícita para /borrar_todo
         if comando and comando.startswith("/borrar_todo") and "confirmar" not in comando:
-            requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": "⚠️ ¿Seguro que deseas borrar TODA la agenda? Responde con '/borrar_todo confirmar'"})
+            msg = "⚠️ ¿Seguro que deseas borrar TODA la agenda? Responde con '/borrar_todo confirmar'."
+            if prefer_audio:
+                enviar_audio(chat_id, msg)
+            else:
+                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
             return jsonify({"ok": True})
 
+        # 4) Si hay comando → consultar Orbis en modo JSON y GPT compone la respuesta
         if comando:
-            # Pasar chat_id a Orbis
-            r = requests.post(ORBIS_API, json={"texto": comando, "chat_id": chat_id})
+            # Sanitizar comillas/espacios raros al inicio/fin (evita /buscar_fecha 2025-09-13')
+            comando = re.sub(r"^[\s'\"`]+|[\s'\"`]+$", "", comando).strip()
+
+            r = requests.post(ORBIS_API, json={"texto": comando, "chat_id": chat_id, "modo": "json"})
             try:
-                respuesta_orbis = r.json().get("respuesta", "❌ No obtuve respuesta de la agenda.")
+                data_orbis = r.json()
             except Exception:
-                respuesta_orbis = "⚠️ Error: la agenda devolvió un formato inesperado."
+                data_orbis = {"ok": False, "error": "respuesta_no_json"}
 
-            # Guardar última agenda si aplica
-            if comando.startswith("/agenda") or comando.startswith("/buscar_fecha"):
-                citas = []
-                for linea in respuesta_orbis.splitlines():
-                    m = re.match(r"(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) → (.+)", linea.strip())
-                    if m:
-                        citas.append({"fecha": m.group(1), "hora": m.group(2), "texto": m.group(3)})
-                if citas:
-                    ULTIMA_AGENDA[chat_id] = citas
+            print(f"📦 Datos de Orbis: {data_orbis}", flush=True)
 
-            # Responder
-            if prefer_audio:
-                enviar_audio(chat_id, respuesta_orbis)
+            texto_final = ""
+            if not data_orbis.get("ok"):
+                # GPT traduce el error sin inventar
+                op = data_orbis.get("op")
+                err = data_orbis.get("error", "error_desconocido")
+                if op == "borrar" and err == "no_encontrado":
+                    texto_final = "No encontré una cita con esa fecha y hora para borrar."
+                elif op == "reprogramar" and err == "no_encontrado":
+                    texto_final = "No pude reprogramar porque no hallé la cita original."
+                elif op == "modificar" and err == "no_encontrado":
+                    texto_final = "No pude modificar: no existe una cita en esa fecha y hora."
+                else:
+                    texto_final = "Ocurrió un problema con la agenda. Intenta de nuevo."
             else:
-                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": respuesta_orbis})
+                op = data_orbis.get("op")
 
-        # ============================
-        # Respuesta normal de MesaGPT
-        # ============================
+                # Listados: agenda / buscar_fecha / buscar
+                if op in ("agenda", "buscar_fecha", "buscar"):
+                    items = data_orbis.get("items", [])
+                    # Guardar última agenda (para “borra esa”)
+                    if items:
+                        ULTIMA_AGENDA[chat_id] = items
+
+                    if not items:
+                        if op == "agenda":
+                            texto_final = "No tienes citas en tu agenda."
+                        elif op == "buscar_fecha":
+                            fecha = data_orbis.get("fecha")
+                            texto_final = f"No tienes citas el {fecha}."
+                        else:
+                            q = data_orbis.get("q", "")
+                            texto_final = f"No encontré citas que contengan “{q}”."
+                    else:
+                        if op == "buscar_fecha":
+                            fecha = data_orbis.get("fecha")
+                            encabezado = f"Estas son tus citas del {fecha}:"
+                        elif op == "buscar":
+                            q = data_orbis.get("q", "")
+                            encabezado = f"Encontré estas citas relacionadas con “{q}”:"
+                        else:
+                            encabezado = "Esta es tu agenda:"
+                        filas = [f"- {it['hora']} → {it['texto']}" for it in items]
+                        texto_final = f"{encabezado}\n" + "\n".join(filas)
+
+                elif op == "registrar":
+                    it = data_orbis.get("item", {})
+                    texto_final = f"Anotado: {it.get('texto','(sin texto)')} el {it.get('fecha')} a las {it.get('hora')}."
+
+                elif op == "borrar":
+                    d = data_orbis.get("deleted", {})
+                    texto_final = f"Eliminé la cita de las {d.get('hora')} del {d.get('fecha')}: {d.get('texto')}."
+
+                elif op == "borrar_fecha":
+                    cnt = data_orbis.get("count", 0)
+                    texto_final = "No había citas para esa fecha." if cnt == 0 else f"Listo: eliminé {cnt} cita(s) de ese día."
+
+                elif op == "borrar_todo":
+                    cnt = data_orbis.get("count", 0)
+                    texto_final = "Tu agenda ya estaba vacía." if cnt == 0 else f"Se borró toda la agenda ({cnt} cita(s))."
+
+                elif op == "reprogramar":
+                    viejo = data_orbis.get("from", "")
+                    nuevo = data_orbis.get("to", "")
+                    texto = data_orbis.get("texto", "")
+                    texto_final = f"Reprogramé “{texto}” de {viejo} a {nuevo}."
+
+                elif op == "modificar":
+                    it = data_orbis.get("item", {})
+                    texto_final = f"Actualicé la cita del {it.get('fecha')} {it.get('hora')}: {it.get('texto')}."
+
+                elif op == "cuando":
+                    fechas = data_orbis.get("fechas", [])
+                    q = data_orbis.get("q", "")
+                    if fechas:
+                        texto_final = f"Tienes con {q} en: " + ", ".join(fechas)
+                    else:
+                        texto_final = f"No tienes cita con {q}."
+
+                elif op == "proximos":
+                    eventos = data_orbis.get("eventos", [])
+                    if not eventos:
+                        texto_final = "No hay eventos inmediatos en los próximos minutos."
+                    else:
+                        filas = [f"- {ev['hora']} → {ev['texto']}" for ev in eventos]
+                        texto_final = "Próximos eventos:\n" + "\n".join(filas)
+
+                else:
+                    texto_final = "He procesado la solicitud."
+
+            # 5) Entregar respuesta SIEMPRE desde GPT (texto o audio)
+            if prefer_audio:
+                enviar_audio(chat_id, texto_final)
+            else:
+                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
+
+        # 6) No era agenda → responder como chat normal
         else:
             if prefer_audio:
                 enviar_audio(chat_id, respuesta_mesa)
@@ -317,6 +399,10 @@ def webhook():
 
     msg     = data["message"]
     chat_id = msg["chat"]["id"]
+
+    # 🔴 Recordar el último chat_id para alarmas del scheduler
+    global LAST_CHAT_ID
+    LAST_CHAT_ID = chat_id
 
     # Texto → respondo en texto
     if "text" in msg:
@@ -349,43 +435,40 @@ def webhook():
     with app.test_request_context("/mesa", method="POST", json=payload):
         return mesa()
 
-
+# =========================
 # Healthcheck
+# =========================
 @app.route("/ping", methods=["GET"])
 def ping():
     return "✅ BridgeBot activo en Render"
+
 # =========================
 # Scheduler de alertas
 # =========================
-
-
 def revisar_agenda_y_enviar_alertas():
     """
-    Consulta a Orbis si hay eventos próximos y manda recordatorios.
-    Orbis debe implementar el comando /proximos y devolver un JSON:
-    {
-        "eventos": [
-            {"chat_id": 5155863903, "mensaje": "Reunión con Joaquín a las 10:00"},
-            {"chat_id": 5155863903, "mensaje": "Almuerzo con Ana a las 13:00"}
-        ]
-    }
+    Consulta a Orbis si hay eventos próximos y manda recordatorios por Telegram (audio).
     """
     try:
-        r = requests.post(ORBIS_API, json={"texto": "/proximos"})
+        # Si aún no tenemos un chat_id de Telegram, no intentamos notificar
+        if LAST_CHAT_ID is None:
+            return
+
+        # Pedimos próximos eventos a Orbis y le pasamos el chat_id
+        r = requests.post(ORBIS_API, json={"texto": "/proximos", "chat_id": LAST_CHAT_ID})
         if r.status_code != 200:
             print("⚠️ Orbis no respondió correctamente", flush=True)
             return
 
         eventos = r.json().get("eventos", [])
         for ev in eventos:
-            chat_id = ev.get("chat_id")
-            mensaje = ev.get("mensaje")
+            chat_id = ev.get("chat_id") or LAST_CHAT_ID
+            mensaje = ev.get("mensaje") or ev.get("texto")
             if chat_id and mensaje:
                 enviar_alarma(chat_id, mensaje, prefer_audio=True)
 
     except Exception as e:
         print("❌ Error revisando agenda:", str(e), flush=True)
-
 
 def iniciar_scheduler():
     # Revisar la agenda cada minuto
@@ -397,7 +480,6 @@ def iniciar_scheduler():
             time.sleep(1)
 
     threading.Thread(target=run_scheduler, daemon=True).start()
-
 
 # Iniciar scheduler automáticamente al levantar el bot
 iniciar_scheduler()
