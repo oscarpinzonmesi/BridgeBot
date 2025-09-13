@@ -1,4 +1,11 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:system",
-    "python-envs.pythonProjects": []
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Auto Commit",
+      "type": "shell",
+      "command": "git add . && git commit -m 'auto' && git push origin main",
+      "problemMatcher": []
+    }
+  ]
 }
