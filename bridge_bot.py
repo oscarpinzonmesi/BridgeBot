@@ -49,12 +49,14 @@ def fecha_bogota(delta_dias=0) -> str:
     return (ahora_bogota() + timedelta(days=delta_dias)).strftime("%Y-%m-%d")
 
 def es_si(texto: str) -> bool:
-    t = texto.strip().lower()
-    return t in {"si","sí","claro","ok","dale","hazlo","hágale","de una","correcto","afirmativo","por favor"}
+    t = re.sub(r"[^\wáéíóúüñ\s]", " ", texto or "").strip().lower()
+    candidatos = {"si","sí","claro","ok","dale","hagale","hágale","de una","correcto","afirmativo","por favor","okay","vale"}
+    return any(tok in candidatos for tok in t.split())
 
 def es_no(texto: str) -> bool:
-    t = texto.strip().lower()
-    return t in {"no","nel","negativo","mejor no","nop"}
+    t = re.sub(r"[^\wáéíóúüñ\s]", " ", texto or "").strip().lower()
+    candidatos = {"no","nel","negativo","mejor no","nop","nopes"}
+    return any(tok in candidatos for tok in t.split())
 
 def normalizar_manjana(texto: str) -> str:
     # Corrige variantes comunes: 'manana', 'mañan', 'mañna', etc.
@@ -64,6 +66,19 @@ def normalizar_manjana(texto: str) -> str:
     t = re.sub(r"\bmañna\b", "mañana", t, flags=re.IGNORECASE)
     return t
 
+def _parsear_lineas_a_items(texto: str):
+    """
+    Convierte líneas 'YYYY-MM-DD HH:MM → Texto' en [{'fecha','hora','texto'}].
+    Ignora líneas que no coincidan.
+    """
+    items = []
+    if not isinstance(texto, str):
+        return items
+    for linea in texto.splitlines():
+        m = re.match(r"\s*(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\s*→\s*(.+)\s*$", linea)
+        if m:
+            items.append({"fecha": m.group(1), "hora": m.group(2), "texto": m.group(3)})
+    return items
 
 # =========================
 # INTÉRPRETE (GPT)
@@ -148,42 +163,68 @@ def transcribir_audio(file_path: str) -> str:
 # Texto → Voz (gTTS) y envío
 # =========================
 def preparar_texto_para_audio(texto: str) -> str:
-    # Eliminar emojis/símbolos extraños
-    limpio = re.sub(r"[^A-Za-zÁÉÍÓÚÜáéíóúüÑñ0-9\s:,;()¿?¡!/-]", " ", texto)
-    # Normalizar flechas, guiones, bullets
-    limpio = re.sub(r"[→←↑↓➜➡️⬅️➤➔•·_\*]", " ", limpio)
+    """
+    Limpia el texto para TTS:
+    - Elimina símbolos y emojis.
+    - Normaliza fechas 15/09/2025 -> '15 de septiembre de 2025' y 15/09 -> '15 de septiembre'.
+    - Convierte horas 24h (10:00, 13:05, 20.30) a 12h con 'de la mañana/tarde/noche'.
+    - Evita leer puntuación innecesaria.
+    """
+    # 1) Quitar emojis/símbolos (dejamos solo letras, números y espacios)
+    limpio = re.sub(r"[^A-Za-zÁÉÍÓÚÜáéíóúüÑñ0-9\s/.:]", " ", texto)
 
-    # Fechas dd/mm/yyyy → '15 de septiembre de 2025' y dd/mm → '15 de septiembre'
+    # 2) Normalizar flechas, guiones, bullets, paréntesis y otros signos frecuentes a espacio
+    limpio = re.sub(r"[()→←↑↓➜➡️⬅️➤➔•·_\-\*=\[\]{}<>|#%~\"']", " ", limpio)
+
+    # 3) Fechas dd/mm/yyyy → '15 de septiembre de 2025' y dd/mm → '15 de septiembre'
     def _mes(n):
         return ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"][n-1]
-    limpio = re.sub(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b",
-                    lambda m: f"{int(m.group(1))} de {_mes(int(m.group(2)))} de {m.group(3)}",
-                    limpio)
-    limpio = re.sub(r"\b(\d{1,2})/(\d{1,2})\b",
-                    lambda m: f"{int(m.group(1))} de {_mes(int(m.group(2)))}",
-                    limpio)
 
-    # Horas HH:MM o HH.MM a 12h natural
+    limpio = re.sub(
+        r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b",
+        lambda m: f"{int(m.group(1))} de {_mes(int(m.group(2)))} de {m.group(3)}",
+        limpio
+    )
+    limpio = re.sub(
+        r"\b(\d{1,2})/(\d{1,2})\b",
+        lambda m: f"{int(m.group(1))} de {_mes(int(m.group(2)))}",
+        limpio
+    )
+
+    # 4) Horas HH:MM o HH.MM → 12h natural
     def conv_hora(m):
-        h = int(m.group(1)); mnt = int(m.group(2))
-        if h == 0:   h12, suf = 12, "de la noche"
-        elif h < 12: h12, suf = h, "de la mañana"
-        elif h == 12: h12, suf = 12, "del mediodía"
-        elif h < 19: h12, suf = h - 12, "de la tarde"
-        else:         h12, suf = h - 12, "de la noche"
-        return f"{h12} {('y ' + str(mnt)) if mnt else ''} {suf}".strip()
+        h = int(m.group(1))
+        mnt = int(m.group(2))
+        if h == 0:
+            h12, suf = 12, "de la noche"
+        elif h < 12:
+            h12, suf = h, "de la mañana"
+        elif h == 12:
+            h12, suf = 12, "del mediodía"
+        elif h < 19:
+            h12, suf = h - 12, "de la tarde"
+        else:
+            h12, suf = h - 12, "de la noche"
+
+        if mnt == 0:
+            # más natural que “doce de la tarde” → “doce en punto de la tarde”
+            return f"{h12} en punto {suf}"
+        elif mnt < 10:
+            # “tres y 5 de la tarde”
+            return f"{h12} y {mnt} {suf}"
+        else:
+            # “tres {mnt} de la tarde”
+            return f"{h12} {mnt} {suf}"
+
     limpio = re.sub(r"\b(\d{1,2})[:.](\d{2})\b", conv_hora, limpio)
 
-
-    # Espacios y signos repetidos
-    limpio = re.sub(r"[,:;]{2,}", lambda m: m.group(0)[0], limpio)
+    # 5) Quitar dobles signos/puntos/dos puntos y espacios repetidos
+    limpio = re.sub(r"[,:;.\-]{2,}", " ", limpio)
     limpio = re.sub(r"\s+", " ", limpio).strip()
-    return limpio
-def enviar_audio(chat_id: int | str, texto: str):
-    """
-    Genera MP3 con gTTS y lo envía como audio (sendAudio). Si algo falla, hace fallback a texto.
-    """
 
+    return limpio
+
+def enviar_audio(chat_id: int | str, texto: str):
     try:
         texto_para_leer = preparar_texto_para_audio(texto)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
@@ -201,6 +242,12 @@ def enviar_audio(chat_id: int | str, texto: str):
     except Exception as e:
         print("❌ Error enviando audio:", str(e), flush=True)
         requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto})
+    finally:
+        try:
+            if mp3_path and mp3_path.exists():
+                mp3_path.unlink()
+        except Exception:
+            pass
 
 # =========================
 # Alarmas (Orbis → Telegram)
@@ -272,6 +319,12 @@ def mesa():
 
                 if isinstance(datos_orbis, dict) and datos_orbis.get("ok") and datos_orbis.get("items"):
                     ULTIMA_AGENDA[chat_id] = datos_orbis["items"]
+                # Si Orbis devolvió texto plano en "respuesta", intentamos extraer items
+                elif isinstance(datos_orbis, dict) and isinstance(datos_orbis.get("respuesta"), str):
+                    parsed = _parsear_lineas_a_items(datos_orbis["respuesta"])
+                    if parsed:
+                        ULTIMA_AGENDA[chat_id] = parsed
+
 
                 contenido_json = json.dumps(datos_orbis, ensure_ascii=False) if isinstance(datos_orbis, dict) else str(datos_orbis)
                 respuesta_natural = client.chat.completions.create(
@@ -463,15 +516,13 @@ def revisar_agenda_y_enviar_alertas():
         print("❌ Error revisando agenda:", str(e), flush=True)
 
 def iniciar_scheduler():
-    # Revisar la agenda cada minuto
+    if os.getenv("ENABLE_SCHEDULER", "1") != "1":
+        print("⏭️ Scheduler desactivado por ENABLE_SCHEDULER", flush=True)
+        return
     schedule.every(1).minutes.do(revisar_agenda_y_enviar_alertas)
-
     def run_scheduler():
         while True:
             schedule.run_pending()
             time.sleep(1)
-
     threading.Thread(target=run_scheduler, daemon=True).start()
 
-# Iniciar scheduler automáticamente al levantar el bot
-iniciar_scheduler()
