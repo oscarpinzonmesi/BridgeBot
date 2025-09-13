@@ -31,6 +31,10 @@ def ahora_bogota():
     return datetime.now(timezone.utc) - timedelta(hours=5)
 
 def consultar_mesa_gpt(texto: str) -> str:
+    """
+    Interpreta el mensaje del usuario. Si es agenda, convierte a comandos para Orbis.
+    Si el usuario ya envía un comando (/algo), lo devuelve tal cual.
+    """
     try:
         hoy = ahora_bogota().strftime("%Y-%m-%d")
         respuesta = client.chat.completions.create(
@@ -41,12 +45,11 @@ def consultar_mesa_gpt(texto: str) -> str:
                     "content": (
                         "Eres MesaGPT, el asistente personal de Doctor Mesa.\n"
                         f"Hoy es {hoy} en zona horaria America/Bogota.\n\n"
-
                         "⚠️ REGLAS IMPORTANTES:\n"
                         "- Nunca inventes citas ni agendas. Solo Orbis sabe la verdad.\n"
-                        "- Si el usuario pide ver, borrar, modificar o reprogramar la agenda, "
-                        "SIEMPRE responde con un comando válido para Orbis.\n"
-                        "- Los comandos de agenda son:\n"
+                        "- Si el usuario escribe directamente un comando (comienza con '/'), "
+                        "debes responder exactamente ese mismo comando, sin agregar nada más.\n"
+                        "- Si el usuario habla en lenguaje natural, tradúcelo a uno de los comandos válidos:\n"
                         "  • /agenda\n"
                         "  • /registrar YYYY-MM-DD HH:MM Tarea\n"
                         "  • /borrar YYYY-MM-DD HH:MM\n"
@@ -56,20 +59,15 @@ def consultar_mesa_gpt(texto: str) -> str:
                         "  • /buscar_fecha YYYY-MM-DD\n"
                         "  • /cuando Nombre\n"
                         "  • /reprogramar YYYY-MM-DD HH:MM NUEVA_FECHA NUEVA_HORA\n"
-                        "  • /modificar YYYY-MM-DD HH:MM Nuevo texto\n\n"
-
-                        "- Ejemplos:\n"
-                        "Usuario: \"¿Qué tengo mañana?\"\n"
-                        f"Tú: \"/buscar_fecha {hoy}\"  (o la fecha que corresponda)\n\n"
-
-                        "Usuario: \"Borra todo lo de mañana\"\n"
-                        f"Tú: \"/borrar_fecha {hoy}\"\n\n"
-
-                        "Usuario: \"Muéstrame la agenda\"\n"
-                        "Tú: \"/agenda\"\n\n"
-
-                        "- Si la petición NO es de agenda, responde normal como un asistente humano.\n"
-                        "- No uses nunca flechas, símbolos raros ni inventes horarios."
+                        "  • /modificar YYYY-MM-DD HH:MM Nuevo texto\n"
+                        "- Si la petición NO es de agenda, responde natural como un asistente humano.\n\n"
+                        "Ejemplos:\n"
+                        "Usuario: '¿Tengo cita con Juan?'\n"
+                        "Respuesta: '/buscar Juan'\n\n"
+                        "Usuario: 'Muéstrame la agenda de mañana'\n"
+                        "Respuesta: '/buscar_fecha 2025-09-13'\n\n"
+                        "Usuario: '/agenda'\n"
+                        "Respuesta: '/agenda'\n"
                     )
                 },
                 {"role": "user", "content": texto}
