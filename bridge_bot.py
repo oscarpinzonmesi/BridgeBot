@@ -21,7 +21,7 @@ app = Flask(__name__)
 LAST_CHAT_ID = None
 # Memoria de la última agenda listada por chat (para "borra esa")
 ULTIMA_AGENDA = {}
-
+PENDIENTE = {}  
 # =========================
 # CONFIG
 # =========================
@@ -159,6 +159,7 @@ def enviar_audio(chat_id: int | str, texto: str):
     """
     Genera MP3 con gTTS y lo envía como audio (sendAudio). Si algo falla, hace fallback a texto.
     """
+
     try:
         texto_para_leer = preparar_texto_para_audio(texto)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
