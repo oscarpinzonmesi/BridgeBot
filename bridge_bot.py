@@ -1,5 +1,5 @@
-# bridge_bot.py
 import os
+import json  # ⬅️ NECESARIO
 import requests
 from flask import Flask, request, jsonify
 from openai import OpenAI
@@ -11,7 +11,6 @@ import re
 import schedule
 import threading
 import time
-import json  # ⬅️ necesario para json.dumps en la 2ª pasada de GPT
 
 app = Flask(__name__)
 
@@ -125,48 +124,33 @@ def transcribir_audio(file_path: str) -> str:
 # Texto → Voz (gTTS) y envío
 # =========================
 def preparar_texto_para_audio(texto: str) -> str:
-    """
-    Prepara el texto para voz natural:
-    - Elimina emojis y símbolos raros.
-    - Convierte fechas 15/09/2025 → '15 de septiembre de 2025'.
-    - Convierte horas 24h a 12h con 'de la mañana/tarde/noche'.
-    - Quita espacios múltiples.
-    """
-    # 0) Eliminar emojis/símbolos no alfanuméricos (conserva tildes y signos básicos)
+    # Eliminar emojis/símbolos extraños
     limpio = re.sub(r"[^A-Za-zÁÉÍÓÚÜáéíóúüÑñ0-9\s:,;()¿?¡!/-]", " ", texto)
-
-    # 1) Normalizar guiones, flechas y puntos sueltos a espacio
+    # Normalizar flechas, guiones, bullets
     limpio = re.sub(r"[→←↑↓➜➡️⬅️➤➔•·_\*]", " ", limpio)
 
-    # 2) Fechas DD/MM/YYYY → '15 de septiembre de 2025'
-    def _mes(n): 
-        return ["enero","febrero","marzo","abril","mayo","junio",
-                "julio","agosto","septiembre","octubre","noviembre","diciembre"][n-1]
-    def conv_fecha_ymd(m):
-        d, mm, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        return f"{d} de {_mes(mm)} de {y}"
-    limpio = re.sub(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", conv_fecha_ymd, limpio)
+    # Fechas dd/mm/yyyy → '15 de septiembre de 2025' y dd/mm → '15 de septiembre'
+    def _mes(n):
+        return ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"][n-1]
+    limpio = re.sub(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b",
+                    lambda m: f"{int(m.group(1))} de {_mes(int(m.group(2)))} de {m.group(3)}",
+                    limpio)
+    limpio = re.sub(r"\b(\d{1,2})/(\d{1,2})\b",
+                    lambda m: f"{int(m.group(1))} de {_mes(int(m.group(2)))}",
+                    limpio)
 
-    # 3) Fechas DD/MM → '15 de septiembre'
-    limpio = re.sub(r"\b(\d{1,2})/(\d{1,2})\b", lambda m: f"{int(m.group(1))} de {_mes(int(m.group(2)))}", limpio)
-
-    # 4) Horas HH:MM/HH.MM → 12h con sufijo
+    # Horas HH:MM o HH.MM a 12h natural
     def conv_hora(m):
         h = int(m.group(1)); mnt = int(m.group(2))
-        if h == 0:
-            h12, suf = 12, "de la noche"
-        elif 1 <= h < 12:
-            h12, suf = h, "de la mañana"
-        elif h == 12:
-            h12, suf = 12, "del mediodía"
-        elif 13 <= h < 19:
-            h12, suf = h - 12, "de la tarde"
-        else:
-            h12, suf = h - 12, "de la noche"
+        if h == 0:   h12, suf = 12, "de la noche"
+        elif h < 12: h12, suf = h, "de la mañana"
+        elif h == 12: h12, suf = 12, "del mediodía"
+        elif h < 19: h12, suf = h - 12, "de la tarde"
+        else:         h12, suf = h - 12, "de la noche"
         return f"{h12} {('y ' + str(mnt)) if mnt else ''} {suf}".strip()
     limpio = re.sub(r"\b(\d{1,2})[:.](\d{2})\b", conv_hora, limpio)
 
-    # 5) Quitar duplicados de signos y espacios múltiples
+    # Espacios y signos repetidos
     limpio = re.sub(r"[,:;]{2,}", lambda m: m.group(0)[0], limpio)
     limpio = re.sub(r"\s+", " ", limpio).strip()
     return limpio
@@ -234,11 +218,11 @@ def mesa():
         if " en texto" in txt_low:
             prefer_audio = False
 
-        # 1) GPT interpreta (clasifica agenda vs no agenda)
+        # 1) GPT interpreta (cerebro primero)
         interpretacion = consultar_mesa_gpt(orden)
         print(f"🤖 MesaGPT interpretó: {orden} → {interpretacion}", flush=True)
 
-        # Si el modelo devolvió el mensaje de ambigüedad pero NO es petición de borrar/modificar, dale una respuesta humana
+        # Si la interpretación genérica de ambigüedad salió para un saludo u off-topic, contesta humano
         if interpretacion.startswith("⚠️ No estoy seguro") and not re.search(r"\b(borra|borrar|modificar|reprogramar|cambiar)\b", txt_low):
             interpretacion = "¡Aquí estoy! Te escucho. ¿En qué te ayudo?"
 
@@ -252,7 +236,7 @@ def mesa():
                 comando = m.group(1)
 
         if comando:
-            # Sanitizar: quitar comillas/puntos sueltos, arreglar '/.'
+            # Sanitizar
             comando = comando.strip()
             comando = re.sub(r"^[\s'\"`]+|[\s'\"`]+$", "", comando)
             comando = comando.replace("/.", "/").strip()
@@ -264,7 +248,7 @@ def mesa():
                 else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
                 return jsonify({"ok": True})
 
-            # 3) Consultar a Orbis en modo JSON (si Orbis viejo, devolverá {'respuesta': ...})
+            # 3) Consultar a Orbis (intentamos modo JSON; si Orbis viejo, devolverá 'respuesta')
             r = requests.post(ORBIS_API, json={"texto": comando, "chat_id": chat_id, "modo": "json"})
             try:
                 datos_orbis = r.json()
@@ -273,31 +257,25 @@ def mesa():
 
             print(f"📦 Datos de Orbis: {datos_orbis}", flush=True)
 
-            # Guardar última agenda si tenemos items
+            # Guardar última agenda si aplica
             if isinstance(datos_orbis, dict) and datos_orbis.get("ok") and datos_orbis.get("items"):
                 ULTIMA_AGENDA[chat_id] = datos_orbis["items"]
 
-            # 4) 2ª pasada GPT: redacta natural con base en los datos (o fallback si viene 'respuesta')
-            if isinstance(datos_orbis, dict) and ("ok" in datos_orbis or "respuesta" in datos_orbis):
-                contenido_json = json.dumps(datos_orbis, ensure_ascii=False)
-            else:
-                contenido_json = json.dumps({"ok": False, "error": "formato_desconocido"}, ensure_ascii=False)
-
+            # 4) 2ª pasada: GPT redacta natural con los datos de Orbis (soporta 'ok/op/items' o 'respuesta')
+            contenido_json = json.dumps(datos_orbis, ensure_ascii=False) if isinstance(datos_orbis, dict) else str(datos_orbis)
             respuesta_natural = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {
                         "role": "system",
                         "content": (
-                            "Eres el asistente de Doctor Mesa. Redacta en lenguaje natural, breve y claro, "
-                            "usando EXCLUSIVAMENTE los datos que se te entregan desde Orbis. "
-                            "No inventes. Si no hay citas, dilo claramente. "
-                            "Si la operación fue borrar/modificar/reprogramar, explica brevemente el resultado. "
-                            "Mantén un tono profesional y humano."
+                            "Eres el asistente de Doctor Mesa. Redacta en lenguaje natural, claro y breve, "
+                            "usando SOLO los datos que se te entregan desde Orbis. No inventes. "
+                            "Si no hay citas, dilo. Si se borró/modificó/reprogramó, explica el resultado en una frase."
                         )
                     },
                     {"role": "user", "content": f"Mensaje del usuario: {orden}"},
-                    {"role": "user", "content": f"Datos de Orbis (JSON): {contenido_json}"}
+                    {"role": "user", "content": f"Datos de Orbis (JSON o texto): {contenido_json}"}
                 ]
             )
             texto_final = respuesta_natural.choices[0].message.content.strip()
@@ -309,7 +287,7 @@ def mesa():
                 requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
 
         else:
-            # 6) No es agenda → GPT conversa normal (y puede sugerir agendar)
+            # 6) No es agenda → GPT conversa normal (puede proponer y luego preguntar si agendamos)
             if prefer_audio:
                 enviar_audio(chat_id, interpretacion)
             else:
@@ -332,11 +310,8 @@ def webhook():
 
     msg     = data["message"]
     chat_id = msg["chat"]["id"]
-    global LAST_CHAT_ID
-    LAST_CHAT_ID = chat_id
 
-
-    # 🔴 Recordar el último chat_id para alarmas del scheduler
+    # ✅ Global ANTES de asignar
     global LAST_CHAT_ID
     LAST_CHAT_ID = chat_id
 
