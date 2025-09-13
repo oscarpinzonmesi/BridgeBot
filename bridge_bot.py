@@ -49,14 +49,13 @@ def fecha_bogota(delta_dias=0) -> str:
     return (ahora_bogota() + timedelta(days=delta_dias)).strftime("%Y-%m-%d")
 
 def es_si(texto: str) -> bool:
-    t = re.sub(r"[^\wáéíóúüñ\s]", " ", texto or "").strip().lower()
-    candidatos = {"si","sí","claro","ok","dale","hagale","hágale","de una","correcto","afirmativo","por favor","okay","vale"}
-    return any(tok in candidatos for tok in t.split())
+    t = (texto or "").lower()
+    return bool(re.search(r"\b(s[ií]|claro|ok|dale|h[áa]gale|de una|correcto|afirmativo|por favor)\b", t))
 
 def es_no(texto: str) -> bool:
-    t = re.sub(r"[^\wáéíóúüñ\s]", " ", texto or "").strip().lower()
-    candidatos = {"no","nel","negativo","mejor no","nop","nopes"}
-    return any(tok in candidatos for tok in t.split())
+    t = (texto or "").lower()
+    return bool(re.search(r"\bno\b", t))
+
 
 def normalizar_manjana(texto: str) -> str:
     # Corrige variantes comunes: 'manana', 'mañan', 'mañna', etc.
@@ -89,17 +88,43 @@ def _inferir_fecha_dia(dia: int, chat_id: int | str) -> str | None:
     yyyy = base.year
     mm = base.month
     return f"{yyyy}-{str(mm).zfill(2)}-{str(dia).zfill(2)}"
+
 def detectar_atajo_comando(texto: str) -> str | None:
     t = (texto or "").lower()
-    # agenda completa / general / todas las citas
-    if (re.search(r"\b(todas?|completa|general)\b.*\b(citas|agenda)\b", t)
-        or re.search(r"\b(agenda|citas)\b.*\b(todas?|completa|general)\b", t)
-        or re.search(r"\b(qué|que|cual|cuál|dime|muestrame|muéstrame|lista)\b.*\b(agenda|citas)\b", t)):
+
+    # 🚫 Si el usuario menciona borrar/eliminar/limpiar, NO devolvemos /agenda aquí.
+    #    (Eso lo maneja la rama de borrado específica.)
+    if re.search(r"\b(borra(r)?|elimina(r)?|quita(r)?|suprime(r)?|limpia(r)?)\b", t):
+        return None
+
+    # Consulta general: "todas las citas", "agenda general/completa", "muéstrame la agenda", etc.
+    # (Siempre que no mencione mañana/semana/mes, que se manejan en otras ramas.)
+    if re.search(r"\b(agenda|citas?)\b", t) and re.search(r"\b(tod[oa]s?|completa|general)\b", t):
         return "/agenda"
-    # También si el usuario insiste con “todas” a secas
-    if re.fullmatch(r"\s*(todas?|agenda|agenda completa|agenda general)\s*", t):
+
+    if (re.search(r"\b(qué|que|cuál|cual|dime|mu[eé]strame|muestrame|lista|ens[eé]ñame|enseñame)\b", t)
+        and re.search(r"\b(agenda|citas?)\b", t)):
+        if re.search(r"\b(hoy|mañana|semana|mes|pr[oó]xim[ao]s?)\b", t):
+            return None  # Lo tratarán otras ramas (hoy/mañana/semana/mes)
         return "/agenda"
+
+    # También si el usuario insiste con “todas / agenda / agenda completa / agenda general” a secas
+    if re.fullmatch(r"\s*(toda|todas|todo|agenda(?:\s+(completa|general))?)\s*", t):
+        return "/agenda"
+
     return None
+
+
+def detectar_borrar_todo(texto: str) -> bool:
+    t = (texto or "").lower()
+    # verbos de borrar + todo/agenda/citas
+    if re.search(r"\b(borra(r)?|elimina(r)?|limpia(r)?)\b", t) and re.search(r"\b(tod[oa]s?|agenda|citas?)\b", t):
+        return True
+    # frases comunes directas
+    if re.search(r"\b(borra|elimina)\s+tod[oa]s?\s+(la\s+)?(agenda|citas?)\b", t):
+        return True
+    return False
+
 
 def _parsear_fecha_es(texto: str) -> str | None:
     """
@@ -519,15 +544,19 @@ def mesa():
                     comando = f"/buscar_fecha {fecha_bogota(1)}"
                 elif pend.get("tipo") == "buscar_fecha" and pend.get("fecha") == "hoy":
                     comando = f"/buscar_fecha {fecha_bogota(0)}"
+                elif pend.get("tipo") == "borrar_todo":
+                    comando = "/borrar_todo confirmar"
                 else:
                     comando = pend.get("comando")
 
                 PENDIENTE.pop(chat_id, None)
 
                 # Consultar Orbis en modo JSON, redactar natural y responder
-                r = requests.post(ORBIS_API, json={"texto": comando, "chat_id": chat_id, "modo": "json"})
                 try:
+                    r = requests.post(ORBIS_API, json={"texto": comando, "chat_id": chat_id, "modo": "json"}, timeout=10)
                     datos_orbis = r.json()
+                except requests.exceptions.Timeout:
+                    datos_orbis = {"ok": False, "error": "timeout_orbis"}
                 except Exception:
                     datos_orbis = {"ok": False, "error": "respuesta_no_json"}
 
@@ -535,12 +564,10 @@ def mesa():
 
                 if isinstance(datos_orbis, dict) and datos_orbis.get("ok") and datos_orbis.get("items"):
                     ULTIMA_AGENDA[chat_id] = datos_orbis["items"]
-                # Si Orbis devolvió texto plano en "respuesta", intentamos extraer items
                 elif isinstance(datos_orbis, dict) and isinstance(datos_orbis.get("respuesta"), str):
                     parsed = _parsear_lineas_a_items(datos_orbis["respuesta"])
                     if parsed:
                         ULTIMA_AGENDA[chat_id] = parsed
-
 
                 contenido_json = json.dumps(datos_orbis, ensure_ascii=False) if isinstance(datos_orbis, dict) else str(datos_orbis)
                 respuesta_natural = client.chat.completions.create(
@@ -553,22 +580,38 @@ def mesa():
                     ]
                 )
                 texto_final = respuesta_natural.choices[0].message.content.strip()
-                if prefer_audio: enviar_audio(chat_id, texto_final)
-                else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
+                if prefer_audio:
+                    enviar_audio(chat_id, texto_final)
+                else:
+                    requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
                 return jsonify({"ok": True})
 
             elif es_no(txt_low):
                 PENDIENTE.pop(chat_id, None)
                 msg = "Listo, no consulto la agenda. ¿Quieres que te proponga un plan para mañana?"
-                if prefer_audio: enviar_audio(chat_id, msg)
-                else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+                if prefer_audio:
+                    enviar_audio(chat_id, msg)
+                else:
+                    requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
                 return jsonify({"ok": True})
-            # Si no es un “sí/no”, seguimos flujo normal sin borrar el pendiente.
-                # 2-bis) ATAJO: “borra … del <fecha>” → /borrar_fecha YYYY-MM-DD (sin esperar a GPT)
+            # Si no es “sí/no”, seguimos flujo normal sin borrar el pendiente.
+        # 2-a) ATAJO: borrar TODO (sin pasar por GPT)
+        if detectar_borrar_todo(txt_low):
+            # pide confirmación explícita
+            PENDIENTE[chat_id] = {"tipo": "borrar_todo"}
+            msg = "⚠️ ¿Seguro que deseas borrar TODA la agenda? Responde con 'sí' para confirmar."
+            if prefer_audio:
+                enviar_audio(chat_id, msg)
+            else:
+                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+            return jsonify({"ok": True})
+
+        # 2-bis) ATAJO: “borra … del <fecha>” → /borrar_fecha YYYY-MM-DD (sin esperar a GPT)
         #     Cubre: “borra eso del 10 de septiembre”, “elimina las del 10/09”, etc.
         if re.search(r"\b(borra|elimina|quita|suprime|borre)\b", txt_low):
             # Fecha explícita en el mismo mensaje
             fecha_det = _parsear_fecha_es(txt_low)
+            comando = None
             if fecha_det:
                 comando = f"/borrar_fecha {fecha_det}"
             else:
@@ -580,19 +623,23 @@ def mesa():
                     # Pido confirmación antes de ejecutar
                     PENDIENTE[chat_id] = {"tipo": "borrar_fecha", "fecha_propuesta": fecha_inf, "comando": f"/borrar_fecha {fecha_inf}"}
                     msg = f"¿Borro todas las citas del {fecha_inf} en Orbis?"
-                    if prefer_audio: enviar_audio(chat_id, msg)
-                    else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+                    if prefer_audio:
+                        enviar_audio(chat_id, msg)
+                    else:
+                        requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
                     return jsonify({"ok": True})
 
-            if 'comando' in locals() and comando:
+            if comando:
                 # Confirmación para /borrar_todo (por si acaso)
                 if comando.startswith("/borrar_todo") and "confirmar" not in comando:
                     msg = "⚠️ ¿Seguro que deseas borrar TODA la agenda? Responde con '/borrar_todo confirmar'."
-                    if prefer_audio: enviar_audio(chat_id, msg)
-                    else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+                    if prefer_audio:
+                        enviar_audio(chat_id, msg)
+                    else:
+                        requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
                     return jsonify({"ok": True})
 
-                # Ejecutar contra Orbis en modo JSON y redactar natural (igual que tu bloque actual)
+                # Ejecutar contra Orbis en modo JSON y redactar natural
                 try:
                     r = requests.post(ORBIS_API, json={"texto": comando, "chat_id": chat_id, "modo": "json"}, timeout=10)
                     datos_orbis = r.json()
@@ -620,16 +667,20 @@ def mesa():
                     ]
                 )
                 texto_final = respuesta_natural.choices[0].message.content.strip()
-                if prefer_audio: enviar_audio(chat_id, texto_final)
-                else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
+                if prefer_audio:
+                    enviar_audio(chat_id, texto_final)
+                else:
+                    requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
                 return jsonify({"ok": True})
 
         # 2) Heurística: si el usuario menciona 'mañana' + (agenda|citas), crear PENDIENTE y pedir confirmación
         if ("mañana" in txt_low) and (("agenda" in txt_low) or ("citas" in txt_low)):
             PENDIENTE[chat_id] = {"tipo": "buscar_fecha", "fecha": "manana"}
             msg = "¿Quieres que consulte en Orbis tus citas de mañana?"
-            if prefer_audio: enviar_audio(chat_id, msg)
-            else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+            if prefer_audio:
+                enviar_audio(chat_id, msg)
+            else:
+                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
             return jsonify({"ok": True})
 
         # 2-ter) ATAJO: consulta general de agenda → /agenda (sin esperar al LLM)
@@ -673,8 +724,8 @@ def mesa():
             else:
                 requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
             return jsonify({"ok": True})
-    
-                # 2-quater) ATAJO: reprogramar/modificar usando la última agenda + nueva fecha/hora
+
+        # 2-quater) ATAJO: reprogramar/modificar usando la última agenda + nueva fecha/hora
         if re.search(r"\b(modifica|midifica|modificar|cambia|cambiar|reprograma|reprogramar|mueve|mover|cámbiala|cambiala)\b", txt_low):
             target = _seleccionar_item_desde_contexto(chat_id, orden)
             nueva_fecha = _parsear_fecha_es(txt_low)
@@ -720,8 +771,10 @@ def mesa():
                     ]
                 )
                 texto_final = respuesta_natural.choices[0].message.content.strip()
-                if prefer_audio: enviar_audio(chat_id, texto_final)
-                else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
+                if prefer_audio:
+                    enviar_audio(chat_id, texto_final)
+                else:
+                    requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
                 return jsonify({"ok": True})
 
             # Si falta info, deja un pendiente para completar
@@ -731,8 +784,10 @@ def mesa():
             else:
                 msg = "Necesito que me indiques qué cita (o a partir de la última lista) y la nueva fecha u hora."
 
-            if prefer_audio: enviar_audio(chat_id, msg)
-            else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+            if prefer_audio:
+                enviar_audio(chat_id, msg)
+            else:
+                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
             return jsonify({"ok": True})
 
         # 3) GPT interpreta (cerebro primero)
@@ -748,18 +803,16 @@ def mesa():
         if interpretacion.startswith("/"):
             comando = _sanitizar_comando_capturado(interpretacion)
         else:
-            m = re.search(r"/", interpretacion)
+            m = re.search(r"(/[\w_]+(?:\s+.+)?)", interpretacion)
             if m:
-                comando = _sanitizar_comando_capturado(interpretacion)
-
-
+                comando = _sanitizar_comando_capturado(m.group(1))
 
         # Corrección: si el LLM devolvió /agenda pero el usuario dijo “mañana”
         if comando and comando.startswith("/agenda") and "mañana" in txt_low:
             comando = f"/buscar_fecha {fecha_bogota(1)}"
 
         if comando:
-            # Sanitizar
+            # Sanitizar extra
             comando = comando.strip()
             comando = re.sub(r"^[\s'\"`]+|[\s'\"`]+$", "", comando)
             comando = comando.replace("/.", "/").strip()
@@ -767,14 +820,18 @@ def mesa():
             # Confirmación para /borrar_todo
             if comando.startswith("/borrar_todo") and "confirmar" not in comando:
                 msg = "⚠️ ¿Seguro que deseas borrar TODA la agenda? Responde con '/borrar_todo confirmar'."
-                if prefer_audio: enviar_audio(chat_id, msg)
-                else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+                if prefer_audio:
+                    enviar_audio(chat_id, msg)
+                else:
+                    requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
                 return jsonify({"ok": True})
 
             # Consultar Orbis (modo JSON; si Orbis viejo, devolverá 'respuesta' texto)
-            r = requests.post(ORBIS_API, json={"texto": comando, "chat_id": chat_id, "modo": "json"})
             try:
+                r = requests.post(ORBIS_API, json={"texto": comando, "chat_id": chat_id, "modo": "json"}, timeout=10)
                 datos_orbis = r.json()
+            except requests.exceptions.Timeout:
+                datos_orbis = {"ok": False, "error": "timeout_orbis"}
             except Exception:
                 datos_orbis = {"ok": False, "error": "respuesta_no_json"}
 
@@ -783,6 +840,10 @@ def mesa():
             # Guardar última agenda
             if isinstance(datos_orbis, dict) and datos_orbis.get("ok") and datos_orbis.get("items"):
                 ULTIMA_AGENDA[chat_id] = datos_orbis["items"]
+            elif isinstance(datos_orbis, dict) and isinstance(datos_orbis.get("respuesta"), str):
+                parsed = _parsear_lineas_a_items(datos_orbis["respuesta"])
+                if parsed:
+                    ULTIMA_AGENDA[chat_id] = parsed
 
             # Redacción natural (segunda pasada GPT)
             contenido_json = json.dumps(datos_orbis, ensure_ascii=False) if isinstance(datos_orbis, dict) else str(datos_orbis)
@@ -797,8 +858,10 @@ def mesa():
             )
             texto_final = respuesta_natural.choices[0].message.content.strip()
 
-            if prefer_audio: enviar_audio(chat_id, texto_final)
-            else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
+            if prefer_audio:
+                enviar_audio(chat_id, texto_final)
+            else:
+                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
 
         else:
             # 5) No es agenda → GPT conversa normal (y puede proponer plan y luego ofrecer agendar)
