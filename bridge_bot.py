@@ -11,6 +11,7 @@ import re
 import schedule
 import threading
 import time
+import json  # ⬅️ necesario para json.dumps en la 2ª pasada de GPT
 
 app = Flask(__name__)
 
