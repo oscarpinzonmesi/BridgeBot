@@ -12,7 +12,12 @@ import schedule
 import threading
 import time
 
+
+
+
+
 app = Flask(__name__)
+
 
 # =========================
 # MEMORIA
