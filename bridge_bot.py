@@ -110,6 +110,7 @@ def _parsear_fecha_es(texto: str) -> str | None:
     - 'hoy', 'mañana'
     Devuelve None si no detecta nada.
     """
+    
     t = (texto or "").lower().strip()
     t = normalizar_manjana(t)
 
@@ -118,6 +119,13 @@ def _parsear_fecha_es(texto: str) -> str | None:
         return fecha_bogota(0)
     if re.search(r"\bmañana\b", t):
         return fecha_bogota(1)
+    
+    # "<d> de este mes"
+    m = re.search(r"\b(\d{1,2})\s*(?:de\s+)?este\s+mes\b", t)
+    if m:
+        d = int(m.group(1))
+        base = ahora_bogota()
+        return f"{base.year}-{str(base.month).zfill(2)}-{str(d).zfill(2)}"
 
     # ISO directo
     m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", t)
@@ -143,6 +151,109 @@ def _parsear_fecha_es(texto: str) -> str | None:
             return f"{yyyy}-{str(mm).zfill(2)}-{str(d).zfill(2)}"
 
     return None
+
+ def _parsear_hora_es(texto: str) -> str | None:
+    """
+    Devuelve HH:MM en 24h a partir de expresiones como:
+    - 16:30, 4:30 pm, 4 pm
+    - 4 de la tarde / 9 de la mañana / 10 de la noche
+    - mediodía / medianoche
+    """
+    t = (texto or "").lower()
+
+    # mediodía / medianoche
+    if re.search(r"\bmediod[ií]a\b", t):
+        return "12:00"
+    if re.search(r"\bmedianoche\b", t):
+        return "00:00"
+
+    # HH:MM (opcional am/pm)
+    m = re.search(r"\b(\d{1,2})[:.](\d{2})\s*(am|pm)?\b", t)
+    if m:
+        h = int(m.group(1)); mnt = int(m.group(2)); suf = m.group(3)
+        if suf == "am":
+            if h == 12: h = 0
+        elif suf == "pm":
+            if h != 12: h += 12
+        return f"{str(h).zfill(2)}:{str(mnt).zfill(2)}"
+
+    # H am/pm
+    m = re.search(r"\b(\d{1,2})\s*(am|pm)\b", t)
+    if m:
+        h = int(m.group(1)); suf = m.group(2)
+        if suf == "am":
+            if h == 12: h = 0
+        elif suf == "pm":
+            if h != 12: h += 12
+        return f"{str(h).zfill(2)}:00"
+
+    # "a las 4 (y 15) de la tarde/mañana/noche"
+    m = re.search(r"(?:a\s+las\s+)?(\d{1,2})(?:\s*y\s*(\d{1,2}))?\s+de\s+la\s+(mañana|tarde|noche)\b", t)
+    if m:
+        h = int(m.group(1)); mnt = int(m.group(2) or 0); tramo = m.group(3)
+        if tramo == "mañana":
+            if h == 12: h = 0
+        elif tramo == "tarde":
+            if h != 12: h += 12
+        elif tramo == "noche":
+            if h != 12: h += 12
+        return f"{str(h).zfill(2)}:{str(mnt).zfill(2)}"
+
+    return None
+
+
+def _extraer_indice(texto: str) -> int | None:
+    """Soporta '1.', '1)', 'primera', 'segunda', ..."""
+    t = (texto or "").lower()
+    m = re.search(r"\b(\d{1,2})\s*[\)\.]", t)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            pass
+    ordinales = {"primera":1, "segunda":2, "tercera":3, "cuarta":4, "quinta":5}
+    for k, v in ordinales.items():
+        if k in t:
+            return v
+    return None
+
+
+def _seleccionar_item_desde_contexto(chat_id: int | str, texto: str):
+    """
+    Elige una cita de ULTIMA_AGENDA según:
+    1) Texto entre comillas que aparezca dentro de 'texto'
+    2) Hora explícita (HH:MM) que coincida
+    3) Índice enumerado (1., 2., ...)
+    4) Fallback: primera
+    """
+    items = ULTIMA_AGENDA.get(chat_id) or []
+    if not items:
+        return None
+
+    # 1) Frase entre comillas
+    q = re.search(r"[\"“”'‘’](.+?)[\"“”'‘’]", texto)
+    if q:
+        frag = q.group(1).strip().lower()
+        for it in items:
+            if frag and frag in (it.get("texto") or "").lower():
+                return it
+
+    # 2) Hora explícita
+    m = re.search(r"\b(\d{1,2})[:.](\d{2})\b", texto)
+    if m:
+        hhmm = f"{int(m.group(1)):02d}:{int(m.group(2)):02d}"
+        for it in items:
+            if (it.get("hora") or "") == hhmm:
+                return it
+
+    # 3) Índice
+    idx = _extraer_indice(texto)
+    if idx and 1 <= idx <= len(items):
+        return items[idx - 1]
+
+    # 4) Fallback: primera
+    return items[0]
+   
 
 def _sanitizar_comando_capturado(raw: str) -> str:
     """
@@ -562,6 +673,66 @@ def mesa():
                 requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
             return jsonify({"ok": True})
     
+                # 2-quater) ATAJO: reprogramar/modificar usando la última agenda + nueva fecha/hora
+        if re.search(r"\b(modifica|midifica|modificar|cambia|cambiar|reprograma|reprogramar|mueve|mover|cámbiala|cambiala)\b", txt_low):
+            target = _seleccionar_item_desde_contexto(chat_id, orden)
+            nueva_fecha = _parsear_fecha_es(txt_low)
+            nueva_hora  = _parsear_hora_es(txt_low)
+
+            if target and (nueva_fecha or nueva_hora):
+                old_fecha = target["fecha"]; old_hora = target["hora"]
+                if not nueva_fecha: nueva_fecha = old_fecha
+                if not nueva_hora:  nueva_hora  = old_hora
+
+                comando = f"/reprogramar {old_fecha} {old_hora} {nueva_fecha} {nueva_hora}"
+
+                try:
+                    r = requests.post(
+                        ORBIS_API,
+                        json={"texto": comando, "chat_id": chat_id, "modo": "json"},
+                        timeout=10
+                    )
+                    datos_orbis = r.json()
+                except requests.exceptions.Timeout:
+                    datos_orbis = {"ok": False, "error": "timeout_orbis"}
+                except Exception:
+                    datos_orbis = {"ok": False, "error": "respuesta_no_json"}
+
+                print(f"📦 Datos de Orbis (atajo reprogramar): {datos_orbis}", flush=True)
+
+                # Actualiza última agenda si aplica
+                if isinstance(datos_orbis, dict) and datos_orbis.get("ok") and datos_orbis.get("items"):
+                    ULTIMA_AGENDA[chat_id] = datos_orbis["items"]
+                elif isinstance(datos_orbis, dict) and isinstance(datos_orbis.get("respuesta"), str):
+                    parsed = _parsear_lineas_a_items(datos_orbis["respuesta"])
+                    if parsed:
+                        ULTIMA_AGENDA[chat_id] = parsed
+
+                # Redacción natural solo con datos de Orbis
+                contenido_json = json.dumps(datos_orbis, ensure_ascii=False) if isinstance(datos_orbis, dict) else str(datos_orbis)
+                respuesta_natural = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": ("Eres el asistente de Doctor Mesa. Redacta claro y breve usando SOLO los datos de Orbis. No inventes.")},
+                        {"role": "user", "content": f"Mensaje del usuario: {orden}"},
+                        {"role": "user", "content": f"Datos de Orbis (JSON o texto): {contenido_json}"}
+                    ]
+                )
+                texto_final = respuesta_natural.choices[0].message.content.strip()
+                if prefer_audio: enviar_audio(chat_id, texto_final)
+                else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
+                return jsonify({"ok": True})
+
+            # Si falta info, deja un pendiente para completar
+            if target and not (nueva_fecha or nueva_hora):
+                PENDIENTE[chat_id] = {"tipo": "reprogramar", "vieja_fecha": target["fecha"], "vieja_hora": target["hora"]}
+                msg = f"¿Para qué fecha y hora quieres mover la cita de {target['fecha']} a las {target['hora']}?"
+            else:
+                msg = "Necesito que me indiques qué cita (o a partir de la última lista) y la nueva fecha u hora."
+
+            if prefer_audio: enviar_audio(chat_id, msg)
+            else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+            return jsonify({"ok": True})
 
         # 3) GPT interpreta (cerebro primero)
         interpretacion = consultar_mesa_gpt(orden)
