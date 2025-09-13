@@ -46,11 +46,13 @@ def ahora_bogota():
 # =========================
 def consultar_mesa_gpt(texto: str) -> str:
     """
-    Interpreta el mensaje del usuario. Si es agenda, convierte a comandos para Orbis.
-    Si el usuario ya envía un comando (/algo), lo devuelve tal cual.
+    Interpreta el mensaje del usuario.
+    - Si es agenda: devuelve un comando /... para Orbis.
+    - Si NO es agenda: responde en lenguaje natural (sin consultar Orbis).
     """
     try:
-        hoy = ahora_bogota().strftime("%Y-%m-%d")
+        hoy_dt = ahora_bogota()
+        hoy = hoy_dt.strftime("%Y-%m-%d")
         respuesta = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -58,32 +60,28 @@ def consultar_mesa_gpt(texto: str) -> str:
                     "role": "system",
                     "content": (
                         "Eres MesaGPT, el asistente personal de Doctor Mesa.\n"
-                        f"Hoy es {hoy} en zona horaria America/Bogota.\n\n"
-                        "⚠️ REGLAS IMPORTANTES:\n"
-                        "- Nunca inventes citas ni agendas. Solo Orbis sabe la verdad.\n"
-                        "- Si el usuario escribe directamente un comando (comienza con '/'), "
-                        "debes responder exactamente ese mismo comando, sin agregar nada más.\n"
-                        "- Si el usuario habla en lenguaje natural, tradúcelo a uno de los comandos válidos:\n"
-                        "  • /agenda\n"
-                        "  • /registrar YYYY-MM-DD HH:MM Tarea\n"
-                        "  • /borrar YYYY-MM-DD HH:MM\n"
-                        "  • /borrar_fecha YYYY-MM-DD\n"
-                        "  • /borrar_todo\n"
-                        "  • /buscar Nombre\n"
-                        "  • /buscar_fecha YYYY-MM-DD\n"
-                        "  • /cuando Nombre\n"
-                        "  • /reprogramar YYYY-MM-DD HH:MM NUEVA_FECHA NUEVA_HORA\n"
-                        "  • /modificar YYYY-MM-DD HH:MM Nuevo texto\n"
-                        "- Nunca uses '/borrar_todo' salvo que el usuario diga explícitamente 'borra todo' o 'elimina toda la agenda'.\n"
-                        "- Si el usuario dice 'borra esa', 'borra esto' o algo ambiguo, responde con '__referencia__'.\n"
-                        "- Si no tienes contexto, responde '⚠️ No estoy seguro a qué cita te refieres'.\n\n"
-                        "Ejemplos:\n"
-                        "Usuario: '¿Tengo cita con Juan?'\n"
-                        "Respuesta: '/buscar Juan'\n\n"
-                        "Usuario: 'Muéstrame la agenda de mañana'\n"
-                        "Respuesta: '/buscar_fecha 2025-09-13'\n\n"
-                        "Usuario: '/agenda'\n"
-                        "Respuesta: '/agenda'\n"
+                        f"Hoy es {hoy} (America/Bogota).\n\n"
+                        "TU OBJETIVO:\n"
+                        "- Eres el cerebro. Orbis es solo el cuaderno/agenda.\n"
+                        "- Si el mensaje es de AGENDA, responde EXCLUSIVAMENTE con un comando válido para Orbis.\n"
+                        "- Si NO es de AGENDA, conversa de forma natural y útil (no uses comandos).\n\n"
+                        "REGLAS AGENDA:\n"
+                        "- Comandos válidos:\n"
+                        "  /agenda\n"
+                        "  /registrar YYYY-MM-DD HH:MM Tarea\n"
+                        "  /borrar YYYY-MM-DD HH:MM\n"
+                        "  /borrar_fecha YYYY-MM-DD\n"
+                        "  /borrar_todo\n"
+                        "  /buscar Nombre\n"
+                        "  /buscar_fecha YYYY-MM-DD\n"
+                        "  /cuando Nombre\n"
+                        "  /reprogramar YYYY-MM-DD HH:MM NUEVA_FECHA NUEVA_HORA\n"
+                        "  /modificar YYYY-MM-DD HH:MM Nuevo texto\n"
+                        "- Si el usuario escribe directamente un comando (empieza con '/'), respóndelo tal cual.\n"
+                        "- Con 'mañana' usa fecha = (hoy + 1 día); con 'hoy' usa fecha = hoy. (No inventes otras interpretaciones.)\n"
+                        "- 'No estoy seguro a qué cita te refieres' SOLO se usa si el usuario pide borrar/modificar con referencias ambiguas como 'borra esa/esto' SIN contexto reciente. Para saludos o temas no agenda, NO uses esa frase.\n\n"
+                        "REGLAS CONVERSACIÓN NO AGENDA:\n"
+                        "- Responde como humano, claro y breve. Si el usuario pide organizar el día, propón un plan y AL FINAL pregunta si deseas que lo agende en Orbis.\n"
                     )
                 },
                 {"role": "user", "content": texto}
@@ -92,7 +90,7 @@ def consultar_mesa_gpt(texto: str) -> str:
         return respuesta.choices[0].message.content.strip()
     except Exception as e:
         print("❌ Error consultando a MesaGPT:", str(e), flush=True)
-        return "⚠️ No pude comunicarme con MesaGPT."
+        return "Lo siento, tuve un problema interpretando el mensaje. ¿Puedes repetirlo?"
 
 # =========================
 # Descarga & Transcripción de voz
