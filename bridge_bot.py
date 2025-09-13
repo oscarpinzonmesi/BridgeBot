@@ -40,6 +40,25 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # =========================
 def ahora_bogota():
     return datetime.now(timezone.utc) - timedelta(hours=5)
+def fecha_bogota(delta_dias=0) -> str:
+    return (ahora_bogota() + timedelta(days=delta_dias)).strftime("%Y-%m-%d")
+
+def es_si(texto: str) -> bool:
+    t = texto.strip().lower()
+    return t in {"si","sí","claro","ok","dale","hazlo","hágale","de una","correcto","afirmativo","por favor"}
+
+def es_no(texto: str) -> bool:
+    t = texto.strip().lower()
+    return t in {"no","nel","negativo","mejor no","nop"}
+
+def normalizar_manjana(texto: str) -> str:
+    # Corrige variantes comunes: 'manana', 'mañan', 'mañna', etc.
+    t = texto
+    t = re.sub(r"\bmanana\b", "mañana", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bmañan\b", "mañana", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bmañna\b", "mañana", t, flags=re.IGNORECASE)
+    return t
+
 
 # =========================
 # INTÉRPRETE (GPT)
@@ -213,22 +232,82 @@ def mesa():
         return jsonify({"error": "Falta chat_id u orden"}), 400
 
     try:
-        # Preferencias de salida
+        # 0) Normalizar texto de usuario (errores comunes)
+        orden = normalizar_manjana(orden)
         txt_low = orden.lower()
+
+        # Preferencias de salida por texto
         if any(k in txt_low for k in [" en audio", "nota de voz", "mensaje de voz"]):
             prefer_audio = True
         if " en texto" in txt_low:
             prefer_audio = False
 
-        # 1) GPT interpreta (cerebro primero)
+        # 1) ¿Confirma algo pendiente con un “sí”/“no”?
+        if chat_id in PENDIENTE:
+            pend = PENDIENTE[chat_id]
+            if es_si(txt_low):
+                # Ejecutar la intención pendiente
+                if pend.get("tipo") == "buscar_fecha" and pend.get("fecha") == "manana":
+                    comando = f"/buscar_fecha {fecha_bogota(1)}"
+                elif pend.get("tipo") == "buscar_fecha" and pend.get("fecha") == "hoy":
+                    comando = f"/buscar_fecha {fecha_bogota(0)}"
+                else:
+                    comando = pend.get("comando")
+
+                PENDIENTE.pop(chat_id, None)
+
+                # Consultar Orbis en modo JSON, redactar natural y responder
+                r = requests.post(ORBIS_API, json={"texto": comando, "chat_id": chat_id, "modo": "json"})
+                try:
+                    datos_orbis = r.json()
+                except Exception:
+                    datos_orbis = {"ok": False, "error": "respuesta_no_json"}
+
+                print(f"📦 Datos de Orbis (confirmado): {datos_orbis}", flush=True)
+
+                if isinstance(datos_orbis, dict) and datos_orbis.get("ok") and datos_orbis.get("items"):
+                    ULTIMA_AGENDA[chat_id] = datos_orbis["items"]
+
+                contenido_json = json.dumps(datos_orbis, ensure_ascii=False) if isinstance(datos_orbis, dict) else str(datos_orbis)
+                respuesta_natural = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": ("Eres el asistente de Doctor Mesa. Redacta en lenguaje natural, claro y breve, "
+                                                       "usando SOLO los datos de Orbis. No inventes. Si no hay citas, dilo.")},
+                        {"role": "user", "content": f"Petición confirmada por el usuario: {orden}"},
+                        {"role": "user", "content": f"Datos de Orbis (JSON o texto): {contenido_json}"}
+                    ]
+                )
+                texto_final = respuesta_natural.choices[0].message.content.strip()
+                if prefer_audio: enviar_audio(chat_id, texto_final)
+                else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
+                return jsonify({"ok": True})
+
+            elif es_no(txt_low):
+                PENDIENTE.pop(chat_id, None)
+                msg = "Listo, no consulto la agenda. ¿Quieres que te proponga un plan para mañana?"
+                if prefer_audio: enviar_audio(chat_id, msg)
+                else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+                return jsonify({"ok": True})
+            # Si no es un “sí/no”, seguimos flujo normal sin borrar el pendiente.
+
+        # 2) Heurística: si el usuario menciona 'mañana' + (agenda|citas), crear PENDIENTE y pedir confirmación
+        if ("mañana" in txt_low) and (("agenda" in txt_low) or ("citas" in txt_low)):
+            PENDIENTE[chat_id] = {"tipo": "buscar_fecha", "fecha": "manana"}
+            msg = "¿Quieres que consulte en Orbis tus citas de mañana?"
+            if prefer_audio: enviar_audio(chat_id, msg)
+            else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+            return jsonify({"ok": True})
+
+        # 3) GPT interpreta (cerebro primero)
         interpretacion = consultar_mesa_gpt(orden)
         print(f"🤖 MesaGPT interpretó: {orden} → {interpretacion}", flush=True)
 
-        # Si la interpretación genérica de ambigüedad salió para un saludo u off-topic, contesta humano
+        # Respuesta de ambigüedad para saludos u off-topic → reemplazar por saludo humano
         if interpretacion.startswith("⚠️ No estoy seguro") and not re.search(r"\b(borra|borrar|modificar|reprogramar|cambiar)\b", txt_low):
             interpretacion = "¡Aquí estoy! Te escucho. ¿En qué te ayudo?"
 
-        # 2) ¿Es comando de agenda?
+        # 4) ¿Es comando de agenda?
         comando = None
         if interpretacion.startswith("/"):
             comando = interpretacion
@@ -236,6 +315,10 @@ def mesa():
             m = re.search(r"(/[\w_]+.*)", interpretacion)
             if m:
                 comando = m.group(1)
+
+        # Corrección: si el LLM devolvió /agenda pero el usuario dijo “mañana”
+        if comando and comando.startswith("/agenda") and "mañana" in txt_low:
+            comando = f"/buscar_fecha {fecha_bogota(1)}"
 
         if comando:
             # Sanitizar
@@ -250,7 +333,7 @@ def mesa():
                 else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
                 return jsonify({"ok": True})
 
-            # 3) Consultar a Orbis (intentamos modo JSON; si Orbis viejo, devolverá 'respuesta')
+            # Consultar Orbis (modo JSON; si Orbis viejo, devolverá 'respuesta' texto)
             r = requests.post(ORBIS_API, json={"texto": comando, "chat_id": chat_id, "modo": "json"})
             try:
                 datos_orbis = r.json()
@@ -259,37 +342,28 @@ def mesa():
 
             print(f"📦 Datos de Orbis: {datos_orbis}", flush=True)
 
-            # Guardar última agenda si aplica
+            # Guardar última agenda
             if isinstance(datos_orbis, dict) and datos_orbis.get("ok") and datos_orbis.get("items"):
                 ULTIMA_AGENDA[chat_id] = datos_orbis["items"]
 
-            # 4) 2ª pasada: GPT redacta natural con los datos de Orbis (soporta 'ok/op/items' o 'respuesta')
+            # Redacción natural (segunda pasada GPT)
             contenido_json = json.dumps(datos_orbis, ensure_ascii=False) if isinstance(datos_orbis, dict) else str(datos_orbis)
             respuesta_natural = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Eres el asistente de Doctor Mesa. Redacta en lenguaje natural, claro y breve, "
-                            "usando SOLO los datos que se te entregan desde Orbis. No inventes. "
-                            "Si no hay citas, dilo. Si se borró/modificó/reprogramó, explica el resultado en una frase."
-                        )
-                    },
+                    {"role": "system", "content": ("Eres el asistente de Doctor Mesa. Redacta en lenguaje natural, claro y breve, "
+                                                   "usando SOLO los datos de Orbis. No inventes.")},
                     {"role": "user", "content": f"Mensaje del usuario: {orden}"},
                     {"role": "user", "content": f"Datos de Orbis (JSON o texto): {contenido_json}"}
                 ]
             )
             texto_final = respuesta_natural.choices[0].message.content.strip()
 
-            # 5) Responder (texto o voz)
-            if prefer_audio:
-                enviar_audio(chat_id, texto_final)
-            else:
-                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
+            if prefer_audio: enviar_audio(chat_id, texto_final)
+            else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
 
         else:
-            # 6) No es agenda → GPT conversa normal (puede proponer y luego preguntar si agendamos)
+            # 5) No es agenda → GPT conversa normal (y puede proponer plan y luego ofrecer agendar)
             if prefer_audio:
                 enviar_audio(chat_id, interpretacion)
             else:
