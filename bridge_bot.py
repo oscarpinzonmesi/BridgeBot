@@ -66,6 +66,94 @@ def normalizar_manjana(texto: str) -> str:
     t = re.sub(r"\bmañna\b", "mañana", t, flags=re.IGNORECASE)
     return t
 
+MESES_ES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
+    "noviembre": 11, "diciembre": 12
+}
+
+def _inferir_fecha_dia(dia: int, chat_id: int | str) -> str | None:
+    """Intenta inferir YYYY-MM a partir del contexto (ULTIMA_AGENDA) o del mes actual de Bogotá."""
+    # 1) Si la última agenda listada tiene fechas, intenta encontrar alguna con ese día
+    items = ULTIMA_AGENDA.get(chat_id) or []
+    for it in items:
+        try:
+            # it: {"fecha":"YYYY-MM-DD","hora":"HH:MM","texto":"..."}
+            yyyy, mm, dd = it["fecha"].split("-")
+            if int(dd) == dia:
+                return f"{yyyy}-{mm}-{str(dia).zfill(2)}"
+        except Exception:
+            continue
+    # 2) Si no hay contexto, asume mes/año actuales (Bogotá)
+    base = ahora_bogota()
+    yyyy = base.year
+    mm = base.month
+    return f"{yyyy}-{str(mm).zfill(2)}-{str(dia).zfill(2)}"
+
+def _parsear_fecha_es(texto: str) -> str | None:
+    """
+    Extrae una fecha 'YYYY-MM-DD' desde texto en español:
+    - '10 de septiembre', '10 septiembre'
+    - '10/09', '10-09'
+    - '2025-09-10'
+    - 'hoy', 'mañana'
+    Devuelve None si no detecta nada.
+    """
+    t = (texto or "").lower().strip()
+    t = normalizar_manjana(t)
+
+    # Hoy / Mañana
+    if re.search(r"\bhoy\b", t):
+        return fecha_bogota(0)
+    if re.search(r"\bmañana\b", t):
+        return fecha_bogota(1)
+
+    # ISO directo
+    m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", t)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+
+    # dd/mm o dd-mm (sin año)
+    m = re.search(r"\b(\d{1,2})[/-](\d{1,2})\b", t)
+    if m:
+        d = int(m.group(1)); mth = int(m.group(2))
+        yyyy = ahora_bogota().year
+        return f"{yyyy}-{str(mth).zfill(2)}-{str(d).zfill(2)}"
+
+    # '10 de septiembre' o '10 septiembre' (sin año)
+    m = re.search(r"\b(\d{1,2})\s*(?:de\s+)?([a-záéíóúüñ]+)\b", t)
+    if m:
+        d = int(m.group(1))
+        mes_nombre = m.group(2)
+        mes_nombre = {"setiembre": "septiembre"}.get(mes_nombre, mes_nombre)  # alias común
+        if mes_nombre in MESES_ES:
+            yyyy = ahora_bogota().year
+            mm = MESES_ES[mes_nombre]
+            return f"{yyyy}-{str(mm).zfill(2)}-{str(d).zfill(2)}"
+
+    return None
+
+def _sanitizar_comando_capturado(raw: str) -> str:
+    """
+    De un texto que contiene un comando (incluso en bloque de código),
+    devuelve solo el comando y sus argumentos en una sola línea.
+    """
+    if not raw:
+        return ""
+    # tomar la primera coincidencia /palabra...
+    m = re.search(r"/(agenda|registrar|borrar(?:_fecha|_todo)?|buscar(?:_fecha)?|cuando|reprogramar|modificar)\b[^\n`]*", raw, flags=re.IGNORECASE)
+    if not m:
+        return raw.strip()
+    cmd = m.group(0)
+    # limpiar backticks y espacios
+    cmd = cmd.replace("```", " ").replace("`", " ").strip()
+    # colapsar espacios múltiples
+    cmd = re.sub(r"\s+", " ", cmd)
+    # normalizar '/.' -> '/'
+    cmd = cmd.replace("/.", "/").strip()
+    return cmd
+
+
 def _parsear_lineas_a_items(texto: str):
     """
     Convierte líneas 'YYYY-MM-DD HH:MM → Texto' en [{'fecha','hora','texto'}].
@@ -348,6 +436,65 @@ def mesa():
                 else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
                 return jsonify({"ok": True})
             # Si no es un “sí/no”, seguimos flujo normal sin borrar el pendiente.
+                # 2-bis) ATAJO: “borra … del <fecha>” → /borrar_fecha YYYY-MM-DD (sin esperar a GPT)
+        #     Cubre: “borra eso del 10 de septiembre”, “elimina las del 10/09”, etc.
+        if re.search(r"\b(borra|elimina|quita|suprime|borre)\b", txt_low):
+            # Fecha explícita en el mismo mensaje
+            fecha_det = _parsear_fecha_es(txt_low)
+            if fecha_det:
+                comando = f"/borrar_fecha {fecha_det}"
+            else:
+                # Frase tipo “todas las del 10” (sin mes)
+                m = re.search(r"\btodas?\s+las\s+del\s+(\d{1,2})\b", txt_low)
+                if m:
+                    dia = int(m.group(1))
+                    fecha_inf = _inferir_fecha_dia(dia, chat_id)
+                    # Pido confirmación antes de ejecutar
+                    PENDIENTE[chat_id] = {"tipo": "borrar_fecha", "fecha_propuesta": fecha_inf, "comando": f"/borrar_fecha {fecha_inf}"}
+                    msg = f"¿Borro todas las citas del {fecha_inf} en Orbis?"
+                    if prefer_audio: enviar_audio(chat_id, msg)
+                    else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+                    return jsonify({"ok": True})
+
+            if 'comando' in locals() and comando:
+                # Confirmación para /borrar_todo (por si acaso)
+                if comando.startswith("/borrar_todo") and "confirmar" not in comando:
+                    msg = "⚠️ ¿Seguro que deseas borrar TODA la agenda? Responde con '/borrar_todo confirmar'."
+                    if prefer_audio: enviar_audio(chat_id, msg)
+                    else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+                    return jsonify({"ok": True})
+
+                # Ejecutar contra Orbis en modo JSON y redactar natural (igual que tu bloque actual)
+                try:
+                    r = requests.post(ORBIS_API, json={"texto": comando, "chat_id": chat_id, "modo": "json"}, timeout=10)
+                    datos_orbis = r.json()
+                except requests.exceptions.Timeout:
+                    datos_orbis = {"ok": False, "error": "timeout_orbis"}
+                except Exception:
+                    datos_orbis = {"ok": False, "error": "respuesta_no_json"}
+
+                print(f"📦 Datos de Orbis (atajo borrar_fecha): {datos_orbis}", flush=True)
+
+                if isinstance(datos_orbis, dict) and datos_orbis.get("ok") and datos_orbis.get("items"):
+                    ULTIMA_AGENDA[chat_id] = datos_orbis["items"]
+                elif isinstance(datos_orbis, dict) and isinstance(datos_orbis.get("respuesta"), str):
+                    parsed = _parsear_lineas_a_items(datos_orbis["respuesta"])
+                    if parsed:
+                        ULTIMA_AGENDA[chat_id] = parsed
+
+                contenido_json = json.dumps(datos_orbis, ensure_ascii=False) if isinstance(datos_orbis, dict) else str(datos_orbis)
+                respuesta_natural = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": ("Eres el asistente de Doctor Mesa. Redacta claro y breve usando SOLO los datos de Orbis. No inventes.")},
+                        {"role": "user", "content": f"Mensaje del usuario: {orden}"},
+                        {"role": "user", "content": f"Datos de Orbis (JSON o texto): {contenido_json}"}
+                    ]
+                )
+                texto_final = respuesta_natural.choices[0].message.content.strip()
+                if prefer_audio: enviar_audio(chat_id, texto_final)
+                else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
+                return jsonify({"ok": True})
 
         # 2) Heurística: si el usuario menciona 'mañana' + (agenda|citas), crear PENDIENTE y pedir confirmación
         if ("mañana" in txt_low) and (("agenda" in txt_low) or ("citas" in txt_low)):
@@ -366,13 +513,15 @@ def mesa():
             interpretacion = "¡Aquí estoy! Te escucho. ¿En qué te ayudo?"
 
         # 4) ¿Es comando de agenda?
+               
         comando = None
         if interpretacion.startswith("/"):
-            comando = interpretacion
+            comando = _sanitizar_comando_capturado(interpretacion)
         else:
-            m = re.search(r"(/[\w_]+.*)", interpretacion)
+            m = re.search(r"/", interpretacion)
             if m:
-                comando = m.group(1)
+                comando = _sanitizar_comando_capturado(interpretacion)
+
 
         # Corrección: si el LLM devolvió /agenda pero el usuario dijo “mañana”
         if comando and comando.startswith("/agenda") and "mañana" in txt_low:
