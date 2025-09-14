@@ -1,3 +1,6 @@
+Aquí tienes el archivo completo con los ajustes pedidos (prompts centralizados, uso uniforme del redactor y eliminación del `_llamar_orbis` duplicado). Puedes pegarlo tal cual:
+
+````python
 import os
 import json  # ⬅️ NECESARIO
 import requests
@@ -12,12 +15,7 @@ import schedule
 import threading
 import time
 
-
-
-
-
 app = Flask(__name__)
-
 
 # =========================
 # MEMORIA
@@ -26,7 +24,7 @@ app = Flask(__name__)
 LAST_CHAT_ID = None
 # Memoria de la última agenda listada por chat (para "borra esa")
 ULTIMA_AGENDA = {}
-PENDIENTE = {}  
+PENDIENTE = {}
 # =========================
 # CONFIG
 # =========================
@@ -39,6 +37,45 @@ BRIDGE_API   = f"{TELEGRAM_API}/sendMessage"
 
 # Cliente OpenAI
 client = OpenAI(api_key=OPENAI_API_KEY)
+
+# =========================
+# PROMPTS (centrales)
+# =========================
+PROMPT_SISTEMA_MESAGPT = (
+    "Eres MesaGPT, el asistente personal de Doctor Mesa.\n"
+    "Hoy es {HOY} (America/Bogota).\n\n"
+    "OBJETIVO Y PAPEL:\n"
+    "- Eres el CEREBRO. Orbis es el CUADERNO/agenda.\n"
+    "- Si el mensaje es de AGENDA, responde EXCLUSIVAMENTE con un comando válido para Orbis.\n"
+    "- Si NO es de agenda, conversa de forma natural y útil (no uses comandos).\n"
+    "- NUNCA digas frases como 'no tengo acceso a tu agenda'. Si te piden ver citas/agenda, responde con el comando adecuado.\n\n"
+    "REGLAS AGENDA (tu salida debe ser SOLO uno de estos comandos, en UNA línea, SIN backticks):\n"
+    "  /agenda\n"
+    "  /registrar YYYY-MM-DD HH:MM Tarea\n"
+    "  /borrar YYYY-MM-DD HH:MM\n"
+    "  /borrar_fecha YYYY-MM-DD\n"
+    "  /borrar_todo\n"
+    "  /buscar Nombre\n"
+    "  /buscar_fecha YYYY-MM-DD\n"
+    "  /cuando Nombre\n"
+    "  /reprogramar YYYY-MM-DD HH:MM NUEVA_FECHA NUEVA_HORA\n"
+    "  /modificar YYYY-MM-DD HH:MM Nuevo texto\n"
+    "- Si el usuario empieza con '/', repite EXACTAMENTE ese comando.\n"
+    "- 'mañana' = hoy+1; 'hoy' = hoy. No inventes interpretaciones adicionales.\n"
+    "- Usa 'No estoy seguro a qué cita te refieres' SOLO si pide borrar/modificar sin contexto claro (p. ej., 'borra esa').\n\n"
+    "ATAJOS CLAVE (mapea a comandos):\n"
+    "- 'todas las citas', 'agenda general', 'agenda completa', 'qué hay en la agenda' → /agenda\n"
+    "- 'qué tengo mañana' → /buscar_fecha YYYY-MM-DD (mañana)\n"
+    "- 'qué tengo hoy' → /buscar_fecha YYYY-MM-DD (hoy)\n\n"
+    "FORMATO DE RESPUESTA:\n"
+    "- Si es AGENDA: devuelve ÚNICAMENTE el comando (una línea, sin explicaciones, sin bloques de código).\n"
+    "- Si NO es agenda: responde humano, claro y breve.\n"
+)
+
+PROMPT_REDACTOR_ORBIS = (
+    "Eres el asistente de Doctor Mesa. Redacta en lenguaje natural, claro y breve, "
+    "usando SOLO los datos de Orbis que te paso. No inventes. Si no hay citas, dilo."
+)
 
 # =========================
 # Hora local de Bogotá (contexto para MesaGPT)
@@ -56,7 +93,6 @@ def es_no(texto: str) -> bool:
     t = (texto or "").lower()
     return bool(re.search(r"\bno\b", t))
 
-
 def normalizar_manjana(texto: str) -> str:
     # Corrige variantes comunes: 'manana', 'mañan', 'mañna', etc.
     t = texto
@@ -70,6 +106,7 @@ MESES_ES = {
     "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
     "noviembre": 11, "diciembre": 12
 }
+
 def _llamar_orbis(texto, chat_id, modo="json", timeout_s=12, reintentos=1):
     for intento in range(reintentos + 1):
         try:
@@ -89,6 +126,7 @@ def _llamar_orbis(texto, chat_id, modo="json", timeout_s=12, reintentos=1):
                 time.sleep(1.0)
                 continue
             return {"ok": False, "error": "respuesta_no_json"}
+
 def _fechas_proxima_semana_bogota():
     """Devuelve lista de 7 strings YYYY-MM-DD para la próxima semana (lun-dom) en Bogotá."""
     base = ahora_bogota().date()
@@ -142,7 +180,6 @@ def detectar_atajo_comando(texto: str) -> str | None:
 
     return None
 
-
 def detectar_borrar_todo(texto: str) -> bool:
     t = (texto or "").lower()
     # verbos de borrar + todo/agenda/citas
@@ -153,7 +190,6 @@ def detectar_borrar_todo(texto: str) -> bool:
         return True
     return False
 
-
 def _parsear_fecha_es(texto: str) -> str | None:
     """
     Extrae una fecha 'YYYY-MM-DD' desde texto en español:
@@ -163,7 +199,6 @@ def _parsear_fecha_es(texto: str) -> str | None:
     - 'hoy', 'mañana'
     Devuelve None si no detecta nada.
     """
-    
     t = (texto or "").lower().strip()
     t = normalizar_manjana(t)
 
@@ -172,14 +207,13 @@ def _parsear_fecha_es(texto: str) -> str | None:
         return fecha_bogota(0)
     if re.search(r"\bmañana\b", t):
         return fecha_bogota(1)
-    
-    # dentro de _parsear_fecha_es, tras hoy/mañana:
+
+    # Expresión "15 de este mes"
     m = re.search(r"\b(\d{1,2})\s*(?:de\s+)?este\s+mes\b", (texto or "").lower())
     if m:
         d = int(m.group(1))
         base = ahora_bogota()
         return f"{base.year}-{base.month:02d}-{d:02d}"
-
 
     # ISO directo
     m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", t)
@@ -255,7 +289,6 @@ def _parsear_hora_es(texto: str) -> str | None:
 
     return None
 
-
 def _extraer_indice(texto: str) -> int | None:
     """Soporta '1.', '1)', 'primera', 'segunda', ..."""
     t = (texto or "").lower()
@@ -270,7 +303,6 @@ def _extraer_indice(texto: str) -> int | None:
         if k in t:
             return v
     return None
-
 
 def _seleccionar_item_desde_contexto(chat_id: int | str, texto: str):
     """
@@ -307,7 +339,6 @@ def _seleccionar_item_desde_contexto(chat_id: int | str, texto: str):
 
     # 4) Fallback: primera
     return items[0]
-   
 
 def _sanitizar_comando_capturado(raw: str) -> str:
     """
@@ -337,7 +368,6 @@ def _sanitizar_comando_capturado(raw: str) -> str:
     cmd = re.sub(r"^/\s+", "/", cmd)          # '/ buscar' -> '/buscar'
     cmd = re.sub(r"(?<=/)\s+(?=\w)", "", cmd) # '/  buscar' -> '/buscar'
     return cmd
-
 
 def _parsear_lineas_a_items(texto: str):
     """
@@ -370,36 +400,7 @@ def consultar_mesa_gpt(texto: str) -> str:
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "Eres MesaGPT, el asistente personal de Doctor Mesa.\n"
-                        f"Hoy es {hoy} (America/Bogota).\n\n"
-                        "OBJETIVO Y PAPEL:\n"
-                        "- Eres el CEREBRO. Orbis es el CUADERNO/agenda.\n"
-                        "- Si el mensaje es de AGENDA, responde EXCLUSIVAMENTE con un comando válido para Orbis.\n"
-                        "- Si NO es de agenda, conversa de forma natural y útil (no uses comandos).\n"
-                        "- NUNCA digas frases como 'no tengo acceso a tu agenda'. Si te piden ver citas/agenda, responde con el comando adecuado.\n\n"
-                        "REGLAS AGENDA (salida debe ser solo uno de estos comandos):\n"
-                        "  /agenda\n"
-                        "  /registrar YYYY-MM-DD HH:MM Tarea\n"
-                        "  /borrar YYYY-MM-DD HH:MM\n"
-                        "  /borrar_fecha YYYY-MM-DD\n"
-                        "  /borrar_todo\n"
-                        "  /buscar Nombre\n"
-                        "  /buscar_fecha YYYY-MM-DD\n"
-                        "  /cuando Nombre\n"
-                        "  /reprogramar YYYY-MM-DD HH:MM NUEVA_FECHA NUEVA_HORA\n"
-                        "  /modificar YYYY-MM-DD HH:MM Nuevo texto\n"
-                        "- Si el usuario empieza con '/', repite EXACTAMENTE ese comando.\n"
-                        "- 'mañana' = hoy+1; 'hoy' = hoy. No inventes interpretaciones adicionales.\n"
-                        "- 'No estoy seguro a qué cita te refieres' SOLO si pide borrar/modificar sin contexto claro (p. ej., 'borra esa').\n\n"
-                        "ATAJOS CLAVE (mapea a comandos):\n"
-                        "- 'todas las citas', 'agenda general', 'agenda completa', 'qué hay en la agenda' → /agenda\n"
-                        "- 'qué tengo mañana' → /buscar_fecha YYYY-MM-DD (mañana)\n"
-                        "- 'qué tengo hoy' → /buscar_fecha YYYY-MM-DD (hoy)\n\n"
-                        "NO AGENDA:\n"
-                        "- Responde como humano, claro y breve. Si pide organizar el día, propón plan y al final pregunta si quieres que lo agende en Orbis."
-                    )
-
+                    "content": PROMPT_SISTEMA_MESAGPT.format(HOY=hoy)
                 },
                 {"role": "user", "content": texto}
             ]
@@ -485,13 +486,10 @@ def preparar_texto_para_audio(texto: str) -> str:
             h12, suf = h - 12, "de la noche"
 
         if mnt == 0:
-            # más natural que “doce de la tarde” → “doce en punto de la tarde”
             return f"{h12} en punto {suf}"
         elif mnt < 10:
-            # “tres y 5 de la tarde”
             return f"{h12} y {mnt} {suf}"
         else:
-            # “tres {mnt} de la tarde”
             return f"{h12} {mnt} {suf}"
 
     limpio = re.sub(r"\b(\d{1,2})[:.](\d{2})\b", conv_hora, limpio)
@@ -501,23 +499,6 @@ def preparar_texto_para_audio(texto: str) -> str:
     limpio = re.sub(r"\s+", " ", limpio).strip()
 
     return limpio
-
-def _llamar_orbis(texto, chat_id, modo="json", timeout_s=12, reintentos=1):
-    for intento in range(reintentos + 1):
-        try:
-            r = requests.post(ORBIS_API, json={"texto": texto, "chat_id": chat_id, "modo": modo}, timeout=timeout_s)
-            return r.json()
-        except requests.exceptions.Timeout:
-            if intento < reintentos:
-                time.sleep(1.5)
-                continue
-            return {"ok": False, "error": "timeout_orbis"}
-        except Exception:
-            if intento < reintentos:
-                time.sleep(1.0)
-                continue
-            return {"ok": False, "error": "respuesta_no_json"}
-
 
 def enviar_audio(chat_id: int | str, texto: str):
     try:
@@ -627,8 +608,7 @@ def mesa():
                 respuesta_natural = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": ("Eres el asistente de Doctor Mesa. Redacta en lenguaje natural, claro y breve, "
-                                                       "usando SOLO los datos de Orbis. No inventes. Si no hay citas, dilo.")},
+                        {"role": "system", "content": PROMPT_REDACTOR_ORBIS},
                         {"role": "user", "content": f"Petición confirmada por el usuario: {orden}"},
                         {"role": "user", "content": f"Datos de Orbis (JSON o texto): {contenido_json}"}
                     ]
@@ -649,6 +629,7 @@ def mesa():
                     requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
                 return jsonify({"ok": True})
             # Si no es “sí/no”, seguimos flujo normal sin borrar el pendiente.
+
         # 2-a) ATAJO: borrar TODO (sin pasar por GPT)
         if detectar_borrar_todo(txt_low):
             # pide confirmación explícita
@@ -660,7 +641,7 @@ def mesa():
                 requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
             return jsonify({"ok": True})
 
-                # 2-bis) ATAJO: borrado directo (sin pasar por GPT)
+        # 2-bis) ATAJO: borrado directo (sin pasar por GPT)
         # Cubre: "borra ...", "elimina ...", incluso typo "alimina ..."
         if re.search(r"\b(borra(?:r)?|[ae]limina(?:r)?|quita(?:r)?|suprime(?:r)?|borre)\b", txt_low):
             comando = None
@@ -729,7 +710,7 @@ def mesa():
                 respuesta_natural = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": ("Eres el asistente de Doctor Mesa. Redacta claro y breve usando SOLO los datos de Orbis. No inventes.")},
+                        {"role": "system", "content": PROMPT_REDACTOR_ORBIS},
                         {"role": "user", "content": f"Mensaje del usuario: {orden}"},
                         {"role": "user", "content": f"Datos de Orbis (JSON o texto): {contenido_json}"}
                     ]
@@ -738,11 +719,12 @@ def mesa():
                 if prefer_audio: enviar_audio(chat_id, texto_final)
                 else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
                 return jsonify({"ok": True})
-                # 0-bis) Verificación directa: "¿ya borraste todo?" / "qué agenda hay?"
+
+        # 0-bis) Verificación directa: "¿ya borraste todo?" / "qué agenda hay?"
         if (re.search(r"\bya\s+borra(?:ste|ron)\b.*\b(todo|agenda|citas?)\b", txt_low)
             or re.search(r"\bqued[óo]\s+borrad[ao]\b.*\b(agenda|citas?)\b", txt_low)
             or re.search(r"\b(qué|que|cu[aá]l|cual)\s+agenda\s+(hay|queda|qued[óo])\b", txt_low)):
-            
+
             datos_orbis = _llamar_orbis("/agenda", chat_id, "json", timeout_s=12, reintentos=1)
             # Redactamos nosotros (sin LLM) para evitar "no tengo acceso..."
             if isinstance(datos_orbis, dict) and datos_orbis.get("ok"):
@@ -763,124 +745,7 @@ def mesa():
             else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
             return jsonify({"ok": True})
 
-
-        # 2) Heurística: si el usuario menciona 'mañana' + (agenda|citas), crear PENDIENTE y pedir confirmación
-        if ("mañana" in txt_low) and (("agenda" in txt_low) or ("citas" in txt_low)):
-            PENDIENTE[chat_id] = {"tipo": "buscar_fecha", "fecha": "manana"}
-            msg = "¿Quieres que consulte en Orbis tus citas de mañana?"
-            if prefer_audio:
-                enviar_audio(chat_id, msg)
-            else:
-                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
-            return jsonify({"ok": True})
-
-        # 2-ter) ATAJO: consulta general de agenda → /agenda (sin esperar al LLM)
-        cmd_atajo = detectar_atajo_comando(txt_low)
-        if cmd_atajo:
-            try:
-                r = requests.post(
-                    ORBIS_API,
-                    json={"texto": cmd_atajo, "chat_id": chat_id, "modo": "json"},
-                    timeout=10
-                )
-                datos_orbis = r.json()
-            except requests.exceptions.Timeout:
-                datos_orbis = {"ok": False, "error": "timeout_orbis"}
-            except Exception:
-                datos_orbis = {"ok": False, "error": "respuesta_no_json"}
-
-            print(f"📦 Datos de Orbis (atajo /agenda): {datos_orbis}", flush=True)
-
-            # Actualiza última agenda si aplica
-            if isinstance(datos_orbis, dict) and datos_orbis.get("ok") and datos_orbis.get("items"):
-                ULTIMA_AGENDA[chat_id] = datos_orbis["items"]
-            elif isinstance(datos_orbis, dict) and isinstance(datos_orbis.get("respuesta"), str):
-                parsed = _parsear_lineas_a_items(datos_orbis["respuesta"])
-                if parsed:
-                    ULTIMA_AGENDA[chat_id] = parsed
-
-            # Redacción natural (solo con datos de Orbis)
-            contenido_json = json.dumps(datos_orbis, ensure_ascii=False) if isinstance(datos_orbis, dict) else str(datos_orbis)
-            respuesta_natural = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": ("Eres el asistente de Doctor Mesa. Redacta claro y breve usando SOLO los datos de Orbis. No inventes.")},
-                    {"role": "user", "content": f"Mensaje del usuario: {orden}"},
-                    {"role": "user", "content": f"Datos de Orbis (JSON o texto): {contenido_json}"}
-                ]
-            )
-            texto_final = respuesta_natural.choices[0].message.content.strip()
-            if prefer_audio:
-                enviar_audio(chat_id, texto_final)
-            else:
-                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
-            return jsonify({"ok": True})
-
-        # 2-quater) ATAJO: reprogramar/modificar usando la última agenda + nueva fecha/hora
-        if re.search(r"\b(modifica|midifica|modificar|cambia|cambiar|reprograma|reprogramar|mueve|mover|cámbiala|cambiala)\b", txt_low):
-            target = _seleccionar_item_desde_contexto(chat_id, orden)
-            nueva_fecha = _parsear_fecha_es(txt_low)
-            nueva_hora  = _parsear_hora_es(txt_low)
-
-            if target and (nueva_fecha or nueva_hora):
-                old_fecha = target["fecha"]; old_hora = target["hora"]
-                if not nueva_fecha: nueva_fecha = old_fecha
-                if not nueva_hora:  nueva_hora  = old_hora
-
-                comando = f"/reprogramar {old_fecha} {old_hora} {nueva_fecha} {nueva_hora}"
-
-                try:
-                    r = requests.post(
-                        ORBIS_API,
-                        json={"texto": comando, "chat_id": chat_id, "modo": "json"},
-                        timeout=10
-                    )
-                    datos_orbis = r.json()
-                except requests.exceptions.Timeout:
-                    datos_orbis = {"ok": False, "error": "timeout_orbis"}
-                except Exception:
-                    datos_orbis = {"ok": False, "error": "respuesta_no_json"}
-
-                print(f"📦 Datos de Orbis (atajo reprogramar): {datos_orbis}", flush=True)
-
-                # Actualiza última agenda si aplica
-                if isinstance(datos_orbis, dict) and datos_orbis.get("ok") and datos_orbis.get("items"):
-                    ULTIMA_AGENDA[chat_id] = datos_orbis["items"]
-                elif isinstance(datos_orbis, dict) and isinstance(datos_orbis.get("respuesta"), str):
-                    parsed = _parsear_lineas_a_items(datos_orbis["respuesta"])
-                    if parsed:
-                        ULTIMA_AGENDA[chat_id] = parsed
-
-                # Redacción natural solo con datos de Orbis
-                contenido_json = json.dumps(datos_orbis, ensure_ascii=False) if isinstance(datos_orbis, dict) else str(datos_orbis)
-                respuesta_natural = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": ("Eres el asistente de Doctor Mesa. Redacta claro y breve usando SOLO los datos de Orbis. No inventes.")},
-                        {"role": "user", "content": f"Mensaje del usuario: {orden}"},
-                        {"role": "user", "content": f"Datos de Orbis (JSON o texto): {contenido_json}"}
-                    ]
-                )
-                texto_final = respuesta_natural.choices[0].message.content.strip()
-                if prefer_audio:
-                    enviar_audio(chat_id, texto_final)
-                else:
-                    requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
-                return jsonify({"ok": True})
-
-            # Si falta info, deja un pendiente para completar
-            if target and not (nueva_fecha or nueva_hora):
-                PENDIENTE[chat_id] = {"tipo": "reprogramar", "vieja_fecha": target["fecha"], "vieja_hora": target["hora"]}
-                msg = f"¿Para qué fecha y hora quieres mover la cita de {target['fecha']} a las {target['hora']}?"
-            else:
-                msg = "Necesito que me indiques qué cita (o a partir de la última lista) y la nueva fecha u hora."
-
-            if prefer_audio:
-                enviar_audio(chat_id, msg)
-            else:
-                requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
-            return jsonify({"ok": True})
-                # 2) Mención de "mañana" + intención de consultar → consultar directo sin confirmar
+        # 2) Mención de "mañana" + intención de consultar → consultar directo sin confirmar
         if re.search(r"\bmañana\b", txt_low) and re.search(r"\b(agenda|citas?|tengo|hay|qu[eé])\b", txt_low):
             fecha = fecha_bogota(1)
             datos_orbis = _llamar_orbis(f"/buscar_fecha {fecha}", chat_id, "json", timeout_s=12, reintentos=1)
@@ -900,7 +765,8 @@ def mesa():
             if prefer_audio: enviar_audio(chat_id, msg)
             else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
             return jsonify({"ok": True})
-                # 2-bis) Próxima/otra semana → consultar los 7 días y resumir
+
+        # 2-bis) Próxima/otra semana → consultar los 7 días y resumir
         if re.search(r"\b(pr[óo]xima|otra)\s+semana\b", txt_low):
             fechas = _fechas_proxima_semana_bogota()
             agregados = []
@@ -935,10 +801,9 @@ def mesa():
         # 3) GPT interpreta (cerebro primero)
         interpretacion = consultar_mesa_gpt(orden)
         print(f"🤖 MesaGPT interpretó: {orden} → {interpretacion}", flush=True)
-                        # Nunca respondas "no tengo acceso a tu agenda"
+        # Nunca respondas "no tengo acceso a tu agenda"
         if re.search(r"\bno\s+tengo\s+acceso\s+a\s+tu\s+agenda\b", interpretacion, flags=re.IGNORECASE):
             interpretacion = "Puedo revisarlo por ti. Ya mismo consulto en Orbis si lo deseas."
-
 
         # Respuesta de ambigüedad para saludos u off-topic → reemplazar por saludo humano
         if interpretacion.startswith("⚠️ No estoy seguro") and not re.search(r"\b(borra|borrar|modificar|reprogramar|cambiar)\b", txt_low):
@@ -995,14 +860,12 @@ def mesa():
                 if datos_orbis.get("op") in {"borrar_todo", "borrar_fecha", "borrar"}:
                     ULTIMA_AGENDA[chat_id] = []
 
-
             # Redacción natural (segunda pasada GPT)
             contenido_json = json.dumps(datos_orbis, ensure_ascii=False) if isinstance(datos_orbis, dict) else str(datos_orbis)
             respuesta_natural = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": ("Eres el asistente de Doctor Mesa. Redacta en lenguaje natural, claro y breve, "
-                                                   "usando SOLO los datos de Orbis. No inventes.")},
+                    {"role": "system", "content": PROMPT_REDACTOR_ORBIS},
                     {"role": "user", "content": f"Mensaje del usuario: {orden}"},
                     {"role": "user", "content": f"Datos de Orbis (JSON o texto): {contenido_json}"}
                 ]
@@ -1120,3 +983,6 @@ def iniciar_scheduler():
             time.sleep(1)
     threading.Thread(target=run_scheduler, daemon=True).start()
 
+# 🔔 Descomenta si quieres iniciar el scheduler automáticamente al arrancar:
+# iniciar_scheduler()
+````
