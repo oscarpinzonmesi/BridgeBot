@@ -21,7 +21,8 @@ app = Flask(__name__)
 LAST_CHAT_ID = None          # último chat que habló (para alarmas)
 ULTIMA_AGENDA = {}           # cache de la última lista de agenda por chat
 PENDIENTE = {}               # confirmaciones pendientes
-
+# Memoria corta local para citas recientes
+MEMORIA_LOCAL = {}
 # =========================
 # CONFIG
 # =========================
@@ -89,6 +90,32 @@ def _llamar_orbis(texto, chat_id, modo="json", timeout_s=12, reintentos=1):
                 time.sleep(1.0)
                 continue
             return {"ok": False, "error": "respuesta_no_json"}
+
+def obtener_agenda_combinada(chat_id: str, fecha: str | None = None) -> list[dict]:
+    """Trae citas desde Orbis, y si falla, usa lo que haya en memoria local.
+       Si se pasa 'fecha', filtra por esa fecha; si no, trae todo.
+    """
+    items = []
+    try:
+        if fecha:
+            datos = _llamar_orbis(f"/buscar_fecha {fecha}", chat_id, "json", timeout_s=12, reintentos=1)
+        else:
+            datos = _llamar_orbis("/agenda", chat_id, "json", timeout_s=12, reintentos=1)
+
+        if isinstance(datos, dict) and datos.get("ok"):
+            items = datos.get("items") or []
+    except Exception:
+        pass
+
+    # Revisar también en memoria local
+    locales = MEMORIA_LOCAL.get(chat_id, [])
+    if fecha:
+        locales = [c for c in locales if c["fecha"] == fecha]
+
+    # Unir sin duplicar (clave: fecha, hora, texto)
+    todos = {(c["fecha"], c["hora"], c["texto"]): c for c in (items + locales)}
+    return list(todos.values())
+
 
 # =========================
 # FECHAS RELATIVAS
@@ -654,16 +681,16 @@ def mesa():
             if prefer_audio: enviar_audio(chat_id, msg)
             else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
             return jsonify({"ok": True})
-
         # 2-e) Próxima/otra semana → agregación de 7 días
         if re.search(r"\b(pr[óo]xima|otra)\s+semana\b", txt_low):
             fechas = _fechas_proxima_semana_bogota()
             agregados = []
             for f in fechas:
-                datos = _llamar_orbis(f"/buscar_fecha {f}", chat_id, "json", timeout_s=12, reintentos=1)
-                if isinstance(datos, dict) and datos.get("ok"):
-                    agregados.extend(datos.get("items") or [])
+                items = obtener_agenda_combinada(chat_id, f)
+                agregados.extend(items)
+
             ULTIMA_AGENDA[chat_id] = agregados
+
             if not agregados:
                 msg = f"La próxima semana ({fechas[0]} a {fechas[-1]}) no tienes citas en Orbis."
             else:
