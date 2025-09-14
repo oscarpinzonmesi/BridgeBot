@@ -3,11 +3,12 @@ from flask import Flask, request
 import requests, schedule, time, threading
 from openai import OpenAI
 import re, datetime
+import os   # 👈 necesario para leer variables de entorno
 
 # ---------------- CONFIG ----------------
-TOKEN_TELEGRAM = "AQUI_VA_TU_TOKEN_DE_TELEGRAM"
-URL_ORBIS = "AQUI_VA_URL_DE_ORBIS"   # ej: "https://orbis.midominio.com/api"
-OPENAI_KEY = "AQUI_VA_TU_API_KEY_DE_OPENAI"
+TOKEN_TELEGRAM = os.environ.get("TELEGRAM_TOKEN")
+URL_ORBIS = os.environ.get("URL_ORBIS")   # ej: "https://orbis.midominio.com/api"
+OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
 
 app = Flask(__name__)
 cliente = OpenAI(api_key=OPENAI_KEY)
@@ -15,6 +16,7 @@ cliente = OpenAI(api_key=OPENAI_KEY)
 # Memoria temporal
 MEMORIA_LOCAL = {}
 ULTIMA_AGENDA = {}
+
 
 # ---------------- TELEGRAM ----------------
 def enviar_mensaje(chat_id, texto):
