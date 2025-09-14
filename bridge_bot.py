@@ -221,6 +221,35 @@ def _parsear_hora_es(texto: str) -> str | None:
 
     return None
 
+def _parsear_tiempo_relativo(texto: str) -> tuple[str, str] | None:
+    """
+    Detecta frases como:
+    - en 5 minutos
+    - en 2 horas
+    - en 3 días
+    Devuelve (fecha, hora) en formato (YYYY-MM-DD, HH:MM).
+    """
+    t = (texto or "").lower()
+    m = re.search(r"\ben\s+(\d+)\s+(minuto|minutos)\b", t)
+    if m:
+        delta = timedelta(minutes=int(m.group(1)))
+    else:
+        m = re.search(r"\ben\s+(\d+)\s+(hora|horas)\b", t)
+        if m:
+            delta = timedelta(hours=int(m.group(1)))
+        else:
+            m = re.search(r"\ben\s+(\d+)\s+(día|días)\b", t)
+            if m:
+                delta = timedelta(days=int(m.group(1)))
+            else:
+                return None
+
+    dt = ahora_bogota() + delta
+    fecha = dt.strftime("%Y-%m-%d")
+    hora = dt.strftime("%H:%M")
+    return fecha, hora
+
+
 # =========================
 # SELECCIÓN DESDE CONTEXTO
 # =========================
@@ -238,10 +267,21 @@ def _extraer_indice(texto: str) -> int | None:
     return None
 
 def _seleccionar_item_desde_contexto(chat_id: int | str, texto: str):
+    """
+    Elige una cita de ULTIMA_AGENDA según:
+    1) Texto entre comillas
+    2) Hora explícita
+    3) Índice enumerado (1., 2., ...)
+    4) Texto parcial que coincida
+    5) Fallback: primera
+    """
     items = ULTIMA_AGENDA.get(chat_id) or []
     if not items:
         return None
 
+    t = (texto or "").lower()
+
+    # 1) Frase entre comillas
     q = re.search(r"[\"“”'‘’](.+?)[\"“”'‘’]", texto)
     if q:
         frag = q.group(1).strip().lower()
@@ -249,6 +289,7 @@ def _seleccionar_item_desde_contexto(chat_id: int | str, texto: str):
             if frag and frag in (it.get("texto") or "").lower():
                 return it
 
+    # 2) Hora explícita
     m = re.search(r"\b(\d{1,2})[:.](\d{2})\b", texto)
     if m:
         hhmm = f"{int(m.group(1)):02d}:{int(m.group(2)):02d}"
@@ -256,10 +297,17 @@ def _seleccionar_item_desde_contexto(chat_id: int | str, texto: str):
             if (it.get("hora") or "") == hhmm:
                 return it
 
+    # 3) Índice
     idx = _extraer_indice(texto)
     if idx and 1 <= idx <= len(items):
         return items[idx - 1]
 
+    # 4) Texto parcial
+    for it in items:
+        if any(palabra in (it.get("texto") or "").lower() for palabra in t.split()):
+            return it
+
+    # 5) Fallback: primera
     return items[0]
 
 # =========================
@@ -305,30 +353,15 @@ def consultar_mesa_gpt(texto: str) -> str:
                     "content": (
                         "Eres MesaGPT, el asistente personal de Doctor Mesa.\n"
                         f"Hoy es {hoy} (America/Bogota).\n\n"
-                        "OBJETIVO:\n"
-                        "- Eres el CEREBRO. Orbis es el CUADERNO/agenda.\n"
-                        "- Si el mensaje es de AGENDA, responde SOLO con un comando válido para Orbis.\n"
-                        "- Si NO es de agenda, conversa normal.\n"
-                        "- Nunca digas 'no tengo acceso a tu agenda'. Si te piden ver citas/agenda, devuelve el comando adecuado.\n\n"
-                        "COMANDOS VÁLIDOS:\n"
-                        "/agenda\n"
-                        "/registrar YYYY-MM-DD HH:MM Tarea\n"
-                        "/borrar YYYY-MM-DD HH:MM\n"
-                        "/borrar_fecha YYYY-MM-DD\n"
-                        "/borrar_todo\n"
-                        "/buscar Nombre\n"
-                        "/buscar_fecha YYYY-MM-DD\n"
-                        "/cuando Nombre\n"
-                        "/reprogramar YYYY-MM-DD HH:MM NUEVA_FECHA NUEVA_HORA\n"
-                        "/modificar YYYY-MM-DD HH:MM Nuevo texto\n"
-                        "- Si el usuario escribe '/', repite EXACTAMENTE ese comando.\n"
-                        "- 'mañana' = hoy+1; 'hoy' = hoy.\n"
-                        "- 'No estoy seguro a qué cita te refieres' SOLO si quiere borrar/modificar sin contexto.\n\n"
-                        "ATAJOS → COMANDO:\n"
-                        "- 'todas las citas', 'agenda general', 'agenda completa' → /agenda\n"
-                        "- 'qué tengo mañana' → /buscar_fecha YYYY-MM-DD (mañana)\n"
-                        "- 'qué tengo hoy' → /buscar_fecha YYYY-MM-DD (hoy)\n"
+                        "OBJETIVO Y PAPEL:\n"
+                        "- Tú eres el CEREBRO. Orbis es tu CUADERNO.\n"
+                        "- Si el mensaje es de agenda, responde SOLO con comandos válidos (/agenda, /registrar, /borrar...).\n"
+                        "- Si es de agenda pero menciona tiempos relativos como 'en 5 minutos/2 horas/3 días', conviértelos a fecha y hora exacta.\n"
+                        "- Si no es de agenda, conversa en lenguaje natural, breve y claro.\n"
+                        "- Nunca digas 'no tengo acceso a tu agenda'. Si no hay citas, di que no hay.\n"
+                        "- Si el usuario pide planear el día, propone y luego pregunta si deseas agendarlo en Orbis.\n"
                     )
+
                 },
                 {"role": "user", "content": texto}
             ]
@@ -724,6 +757,38 @@ def mesa():
                    "Indícame qué cita (de la última lista) y la nueva fecha u hora.")
             if prefer_audio: enviar_audio(chat_id, msg)
             else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+            return jsonify({"ok": True})
+        # 2-quinquies) ATAJO: registrar con tiempo relativo
+        fecha_hora_rel = _parsear_tiempo_relativo(txt_low)
+
+        if fecha_hora_rel:
+            fecha, hora = fecha_hora_rel
+            # Extraer texto de la tarea
+            # Quitar la parte "en 5 minutos/horas/días"
+            tarea = re.sub(r"\ben\s+\d+\s+(minutos?|horas?|d[ií]as?)\b", "", txt_low).strip()
+            if not tarea:
+                tarea = "Recordatorio"
+
+            comando = f"/registrar {fecha} {hora} {tarea}"
+
+            datos_orbis = _llamar_orbis(comando, chat_id, "json", timeout_s=12, reintentos=1)
+            print(f"📦 Datos de Orbis (tiempo relativo): {datos_orbis}", flush=True)
+
+            if isinstance(datos_orbis, dict) and datos_orbis.get("ok") and datos_orbis.get("items"):
+                ULTIMA_AGENDA[chat_id] = datos_orbis["items"]
+
+            contenido_json = json.dumps(datos_orbis, ensure_ascii=False) if isinstance(datos_orbis, dict) else str(datos_orbis)
+            respuesta_natural = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Eres el asistente de Doctor Mesa. Redacta claro y breve usando SOLO los datos de Orbis."},
+                    {"role": "user", "content": f"Mensaje del usuario: {orden}"},
+                    {"role": "user", "content": f"Datos de Orbis (JSON o texto): {contenido_json}"}
+                ]
+            )
+            texto_final = respuesta_natural.choices[0].message.content.strip()
+            if prefer_audio: enviar_audio(chat_id, texto_final)
+            else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
             return jsonify({"ok": True})
 
         # 3) Interpretación GPT (fallback)
