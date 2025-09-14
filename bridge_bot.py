@@ -70,6 +70,25 @@ MESES_ES = {
     "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
     "noviembre": 11, "diciembre": 12
 }
+def _llamar_orbis(texto, chat_id, modo="json", timeout_s=12, reintentos=1):
+    for intento in range(reintentos + 1):
+        try:
+            r = requests.post(
+                ORBIS_API,
+                json={"texto": texto, "chat_id": chat_id, "modo": modo},
+                timeout=timeout_s
+            )
+            return r.json()
+        except requests.exceptions.Timeout:
+            if intento < reintentos:
+                time.sleep(1.5)
+                continue
+            return {"ok": False, "error": "timeout_orbis"}
+        except Exception:
+            if intento < reintentos:
+                time.sleep(1.0)
+                continue
+            return {"ok": False, "error": "respuesta_no_json"}
 
 def _inferir_fecha_dia(dia: int, chat_id: int | str) -> str | None:
     """Intenta inferir YYYY-MM a partir del contexto (ULTIMA_AGENDA) o del mes actual de Bogotá."""
@@ -701,6 +720,30 @@ def mesa():
                 if prefer_audio: enviar_audio(chat_id, texto_final)
                 else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": texto_final})
                 return jsonify({"ok": True})
+                # 0-bis) Verificación directa: "¿ya borraste todo?" / "qué agenda hay?"
+        if (re.search(r"\bya\s+borra(?:ste|ron)\b.*\b(todo|agenda|citas?)\b", txt_low)
+            or re.search(r"\bqued[óo]\s+borrad[ao]\b.*\b(agenda|citas?)\b", txt_low)
+            or re.search(r"\b(qué|que|cu[aá]l|cual)\s+agenda\s+(hay|queda|qued[óo])\b", txt_low)):
+            
+            datos_orbis = _llamar_orbis("/agenda", chat_id, "json", timeout_s=12, reintentos=1)
+            # Redactamos nosotros (sin LLM) para evitar "no tengo acceso..."
+            if isinstance(datos_orbis, dict) and datos_orbis.get("ok"):
+                items = datos_orbis.get("items") or []
+                if not items:
+                    msg = "La agenda está vacía ahora mismo."
+                else:
+                    # mostramos un resumen corto
+                    primeras = "\n".join(f"- {it['fecha']} {it['hora']}: {it['texto']}" for it in items[:5])
+                    extra = f"\n(y {len(items)-5} más...)" if len(items) > 5 else ""
+                    msg = f"Tienes {len(items)} citas en la agenda:\n{primeras}{extra}"
+                # actualizar contexto local
+                ULTIMA_AGENDA[chat_id] = items
+            else:
+                msg = "No pude verificar la agenda en Orbis ahora mismo. ¿Intento de nuevo?"
+
+            if prefer_audio: enviar_audio(chat_id, msg)
+            else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+            return jsonify({"ok": True})
 
 
         # 2) Heurística: si el usuario menciona 'mañana' + (agenda|citas), crear PENDIENTE y pedir confirmación
@@ -823,6 +866,9 @@ def mesa():
         # 3) GPT interpreta (cerebro primero)
         interpretacion = consultar_mesa_gpt(orden)
         print(f"🤖 MesaGPT interpretó: {orden} → {interpretacion}", flush=True)
+                # Nunca digas "no tengo acceso a tu agenda"
+        if re.search(r"\bno\s+tengo\s+acceso\s+a\s+tu\s+agenda\b", interpretacion, flags=re.IGNORECASE):
+            interpretacion = "Puedo revisarlo por ti. ¿Quieres que consulte en Orbis ahora mismo?"
 
         # Respuesta de ambigüedad para saludos u off-topic → reemplazar por saludo humano
         if interpretacion.startswith("⚠️ No estoy seguro") and not re.search(r"\b(borra|borrar|modificar|reprogramar|cambiar)\b", txt_low):
@@ -874,6 +920,11 @@ def mesa():
                 parsed = _parsear_lineas_a_items(datos_orbis["respuesta"])
                 if parsed:
                     ULTIMA_AGENDA[chat_id] = parsed
+            # Si fue un borrado, limpia el contexto local
+            if isinstance(datos_orbis, dict) and datos_orbis.get("ok"):
+                if datos_orbis.get("op") in {"borrar_todo", "borrar_fecha", "borrar"}:
+                    ULTIMA_AGENDA[chat_id] = []
+
 
             # Redacción natural (segunda pasada GPT)
             contenido_json = json.dumps(datos_orbis, ensure_ascii=False) if isinstance(datos_orbis, dict) else str(datos_orbis)
