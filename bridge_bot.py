@@ -1,23 +1,31 @@
 # bridge_bot.py
-import os
 from flask import Flask, request
-from telegram import Bot
 import requests, schedule, time, threading
 from openai import OpenAI
 import re, datetime
 
 # ---------------- CONFIG ----------------
-TOKEN_TELEGRAM = os.getenv("TELEGRAM_TOKEN")       # en Render → TELEGRAM_TOKEN
-URL_ORBIS = os.getenv("URL_ORBIS")                 # en Render → URL_ORBIS
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")           # en Render → OPENAI_API_KEY
+TOKEN_TELEGRAM = "AQUI_VA_TU_TOKEN_DE_TELEGRAM"
+URL_ORBIS = "AQUI_VA_URL_DE_ORBIS"   # ej: "https://orbis.midominio.com/api"
+OPENAI_KEY = "AQUI_VA_TU_API_KEY_DE_OPENAI"
 
-bot = Bot(token=TOKEN_TELEGRAM)
 app = Flask(__name__)
 cliente = OpenAI(api_key=OPENAI_KEY)
 
 # Memoria temporal
 MEMORIA_LOCAL = {}
 ULTIMA_AGENDA = {}
+
+# ---------------- TELEGRAM ----------------
+def enviar_mensaje(chat_id, texto):
+    """
+    Envía un mensaje a Telegram usando requests (sin async/await).
+    """
+    url = f"https://api.telegram.org/bot{TOKEN_TELEGRAM}/sendMessage"
+    try:
+        requests.post(url, json={"chat_id": chat_id, "text": texto})
+    except Exception as e:
+        print(f"Error enviando mensaje a Telegram: {e}")
 
 # ---------------- ORBIS ----------------
 def _llamar_orbis(comando, chat_id=None, formato="json", timeout_s=10, reintentos=2):
@@ -54,7 +62,7 @@ def consultar_mesa_gpt(mensaje, chat_id):
 
 # ---------------- RECORDATORIOS ----------------
 def enviar_recordatorio(chat_id, texto):
-    bot.send_message(chat_id=chat_id, text=f"⏰ Recordatorio: {texto}")
+    enviar_mensaje(chat_id, f"⏰ Recordatorio: {texto}")
 
 def programar_recordatorio(chat_id, minutos, texto):
     """
@@ -83,7 +91,7 @@ def webhook():
     interpretacion = consultar_mesa_gpt(texto, chat_id)
 
     # enviar respuesta al chat
-    bot.send_message(chat_id=chat_id, text=f"🤖 MesaGPT interpretó: {interpretacion}")
+    enviar_mensaje(chat_id, f"🤖 MesaGPT interpretó: {interpretacion}")
 
     return {"ok": True}
 
