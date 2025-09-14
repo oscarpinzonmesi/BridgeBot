@@ -12,6 +12,7 @@ import schedule
 import threading
 import time
 
+
 app = Flask(__name__)
 
 # =========================
@@ -361,6 +362,10 @@ def consultar_mesa_gpt(texto: str) -> str:
                         "- Si no es de agenda, conversa en lenguaje natural, breve y claro.\n"
                         "- Nunca digas 'no tengo acceso a tu agenda'. Si no hay citas, di que no hay.\n"
                         "- Si el usuario pide planear el día, propone y luego pregunta si deseas agendarlo en Orbis.\n"
+                        "- Si el usuario pide un recordatorio con anticipación (ej. 'avísame 5 minutos antes', 'recordatorio 32 min antes'), responde con /registrar YYYY-MM-DD HH:MM Texto --alerta=Nmin.\n"
+                        "- El valor N puede ser cualquier número entero de minutos (1, 4, 5, 10, 32, 45, 60, etc.).\n"
+                        "- El comando resultante SIEMPRE debe tener exactamente este formato: /registrar FECHA HORA Texto --alerta=Nmin\n"
+
                     )
 
                 },
@@ -911,20 +916,41 @@ def ping():
 # =========================
 # SCHEDULER (recordatorios desde Orbis)
 # =========================
+
 def revisar_agenda_y_enviar_alertas():
     try:
         if LAST_CHAT_ID is None:
             return
+
         r = requests.post(ORBIS_API, json={"texto": "/proximos", "chat_id": LAST_CHAT_ID})
         if r.status_code != 200:
             print("⚠️ Orbis no respondió correctamente", flush=True)
             return
+
         eventos = r.json().get("eventos", [])
         for ev in eventos:
             chat_id = ev.get("chat_id") or LAST_CHAT_ID
             mensaje = ev.get("mensaje") or ev.get("texto")
-            if chat_id and mensaje:
+            fecha = ev.get("fecha")
+            hora = ev.get("hora")
+
+            if not (chat_id and mensaje and fecha and hora):
+                continue
+
+            # 📌 Detectar si hay flag --alerta=Nmin
+            alerta_match = re.search(r"--alerta=(\d+)min", mensaje)
+            if alerta_match:
+                minutos = int(alerta_match.group(1))
+                evento_dt = datetime.strptime(f"{fecha} {hora}", "%Y-%m-%d %H:%M")
+                recordatorio_dt = evento_dt - timedelta(minutes=minutos)
+
+                # Si ya es hora o pasó → disparar ya
+                if datetime.now() >= recordatorio_dt:
+                    enviar_alarma(chat_id, mensaje.replace(alerta_match.group(0), "").strip(), prefer_audio=True)
+            else:
+                # Enviar normal cuando toque
                 enviar_alarma(chat_id, mensaje, prefer_audio=True)
+
     except Exception as e:
         print("❌ Error revisando agenda:", str(e), flush=True)
 
