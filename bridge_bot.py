@@ -89,6 +89,15 @@ def _llamar_orbis(texto, chat_id, modo="json", timeout_s=12, reintentos=1):
                 time.sleep(1.0)
                 continue
             return {"ok": False, "error": "respuesta_no_json"}
+def _fechas_proxima_semana_bogota():
+    """Devuelve lista de 7 strings YYYY-MM-DD para la próxima semana (lun-dom) en Bogotá."""
+    base = ahora_bogota().date()
+    wd = base.weekday()  # lunes=0
+    dias_hasta_prox_lunes = (7 - wd) % 7
+    if dias_hasta_prox_lunes == 0:
+        dias_hasta_prox_lunes = 7
+    lunes = base + timedelta(days=dias_hasta_prox_lunes)
+    return [(lunes + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
 
 def _inferir_fecha_dia(dia: int, chat_id: int | str) -> str | None:
     """Intenta inferir YYYY-MM a partir del contexto (ULTIMA_AGENDA) o del mes actual de Bogotá."""
@@ -304,20 +313,29 @@ def _sanitizar_comando_capturado(raw: str) -> str:
     """
     De un texto que contiene un comando (incluso en bloque de código),
     devuelve solo el comando y sus argumentos en una sola línea.
+    Soporta '/ comando' con espacios después de la barra.
     """
     if not raw:
         return ""
-    # tomar la primera coincidencia /palabra...
-    m = re.search(r"/(agenda|registrar|borrar(?:_fecha|_todo)?|buscar(?:_fecha)?|cuando|reprogramar|modificar)\b[^\n`]*", raw, flags=re.IGNORECASE)
+    # permitir espacios después de la barra: '/   buscar_fecha ...'
+    m = re.search(
+        r"/\s*(agenda|registrar|borrar(?:_fecha|_todo)?|buscar(?:_fecha)?|cuando|reprogramar|modificar)\b[^\n`]*",
+        raw,
+        flags=re.IGNORECASE
+    )
     if not m:
-        return raw.strip()
-    cmd = m.group(0)
-    # limpiar backticks y espacios
+        cmd = raw.strip()
+    else:
+        cmd = m.group(0)
+
+    # limpiar backticks y espacios raros
     cmd = cmd.replace("```", " ").replace("`", " ").strip()
-    # colapsar espacios múltiples
     cmd = re.sub(r"\s+", " ", cmd)
-    # normalizar '/.' -> '/'
+
+    # normalizar '/.' -> '/' y quitar cualquier espacio tras la barra
     cmd = cmd.replace("/.", "/").strip()
+    cmd = re.sub(r"^/\s+", "/", cmd)          # '/ buscar' -> '/buscar'
+    cmd = re.sub(r"(?<=/)\s+(?=\w)", "", cmd) # '/  buscar' -> '/buscar'
     return cmd
 
 
@@ -862,13 +880,65 @@ def mesa():
             else:
                 requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
             return jsonify({"ok": True})
+                # 2) Mención de "mañana" + intención de consultar → consultar directo sin confirmar
+        if re.search(r"\bmañana\b", txt_low) and re.search(r"\b(agenda|citas?|tengo|hay|qu[eé])\b", txt_low):
+            fecha = fecha_bogota(1)
+            datos_orbis = _llamar_orbis(f"/buscar_fecha {fecha}", chat_id, "json", timeout_s=12, reintentos=1)
+            print(f"📦 Datos de Orbis (mañana directo): {datos_orbis}", flush=True)
+
+            if isinstance(datos_orbis, dict) and datos_orbis.get("ok"):
+                items = datos_orbis.get("items") or []
+                ULTIMA_AGENDA[chat_id] = items
+                if not items:
+                    msg = f"Mañana ({fecha}) no tienes citas en Orbis."
+                else:
+                    lista = "\n".join(f"- {it['hora']}: {it['texto']}" for it in items)
+                    msg = f"Para mañana {fecha} tienes:\n{lista}"
+            else:
+                msg = "No pude consultar Orbis ahora mismo. ¿Intento de nuevo?"
+
+            if prefer_audio: enviar_audio(chat_id, msg)
+            else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+            return jsonify({"ok": True})
+                # 2-bis) Próxima/otra semana → consultar los 7 días y resumir
+        if re.search(r"\b(pr[óo]xima|otra)\s+semana\b", txt_low):
+            fechas = _fechas_proxima_semana_bogota()
+            agregados = []
+            for f in fechas:
+                datos = _llamar_orbis(f"/buscar_fecha {f}", chat_id, "json", timeout_s=12, reintentos=1)
+                if isinstance(datos, dict) and datos.get("ok"):
+                    for it in (datos.get("items") or []):
+                        agregados.append(it)
+
+            # Actualiza contexto (última agenda) con todos los items de la semana
+            ULTIMA_AGENDA[chat_id] = agregados
+
+            if not agregados:
+                msg = f"La próxima semana ({fechas[0]} a {fechas[-1]}) no tienes citas en Orbis."
+            else:
+                # Agrupar por día para mostrar bonito
+                por_dia = {}
+                for it in agregados:
+                    por_dia.setdefault(it["fecha"], []).append(it)
+                partes = []
+                for f in fechas:
+                    lst = por_dia.get(f, [])
+                    if lst:
+                        cuerpo = "\n".join(f"  - {x['hora']}: {x['texto']}" for x in lst)
+                        partes.append(f"{f}:\n{cuerpo}")
+                msg = "Agenda de la próxima semana:\n" + "\n".join(partes)
+
+            if prefer_audio: enviar_audio(chat_id, msg)
+            else: requests.post(BRIDGE_API, json={"chat_id": chat_id, "text": msg})
+            return jsonify({"ok": True})
 
         # 3) GPT interpreta (cerebro primero)
         interpretacion = consultar_mesa_gpt(orden)
         print(f"🤖 MesaGPT interpretó: {orden} → {interpretacion}", flush=True)
-                # Nunca digas "no tengo acceso a tu agenda"
+                        # Nunca respondas "no tengo acceso a tu agenda"
         if re.search(r"\bno\s+tengo\s+acceso\s+a\s+tu\s+agenda\b", interpretacion, flags=re.IGNORECASE):
-            interpretacion = "Puedo revisarlo por ti. ¿Quieres que consulte en Orbis ahora mismo?"
+            interpretacion = "Puedo revisarlo por ti. Ya mismo consulto en Orbis si lo deseas."
+
 
         # Respuesta de ambigüedad para saludos u off-topic → reemplazar por saludo humano
         if interpretacion.startswith("⚠️ No estoy seguro") and not re.search(r"\b(borra|borrar|modificar|reprogramar|cambiar)\b", txt_low):
