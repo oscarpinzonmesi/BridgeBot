@@ -1,7 +1,0 @@
-{
-  "triggerTaskOnSave.tasks": {
-    "Auto Commit": ["**/*"]
-  },
-  "python-envs.defaultEnvManager": "ms-python.python:system",
-  "python-envs.pythonProjects": []
-}
