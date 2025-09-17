@@ -96,10 +96,13 @@ def webhook():
 
     interpretacion = consultar_mesa_gpt(texto, chat_id)
 
-    # enviar respuesta al chat
-    enviar_mensaje(chat_id, f"🤖 MesaGPT interpretó: {interpretacion}")
+    # Si la respuesta de GPT empieza con / => es un comando para Orbis
+    if interpretacion.startswith("/"):
+        resultado = _llamar_orbis(interpretacion, chat_id)
+        enviar_mensaje(chat_id, f"📒 Orbis respondió: {resultado}")
+    else:
+        # Respuesta normal en lenguaje natural
+        enviar_mensaje(chat_id, f"🤖 MesaGPT interpretó: {interpretacion}")
 
     return {"ok": True}
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
