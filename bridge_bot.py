@@ -77,6 +77,7 @@ def programar_recordatorio(chat_id, minutos, texto):
         enviar_recordatorio(chat_id, texto)
         return schedule.CancelJob  # se ejecuta una sola vez
     schedule.every(minutos).minutes.do(tarea)
+# Prueba de commit limpio
 
 def correr_scheduler():
     while True:
